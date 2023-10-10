@@ -1,0 +1,4 @@
+*.Identifier
+*.pyc
+*.vscode
+*.std*
