@@ -14,7 +14,7 @@ TensorFlow implementation for RGB-D-Fusion. For details, see the paper **[RGB-D-
 - We perform **rigorous ablations and experiments** to validate our design choices
 
 ## :fire: News
-- **`2023/10/10`**: Code is available Now!
+- **`2023/10/14`**: Code is available Now!
 - **`2023/09/04`**: Our [paper](https://ieeexplore.ieee.org/document/10239167) is now published in IEEE Access!
 - **`2023/07/29`**: We release our [pre-print](https://arxiv.org/abs/2307.15988) on arxiv.
 
