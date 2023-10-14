@@ -1,15 +1,22 @@
+import abc
 import io
 import os
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import SupportsFloat
+from typing import Tuple
+from typing import Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
+from matplotlib.figure import Figure
+from PIL import Image
 from scipy import signal
 
-from PIL import Image
 
-
-def smooth1d(x, window_len):
+def smooth1d(x: np.ndarray, window_len: int) -> np.ndarray:
     # copied from https://matplotlib.org/stable/gallery/misc/demo_agg_filter.html
     s = np.r_[2 * x[0] - x[window_len:1:-1], x, 2 * x[-1] - x[-1:-window_len:-1]]
     w = np.hanning(window_len)
@@ -17,22 +24,23 @@ def smooth1d(x, window_len):
     return y[window_len - 1 : -window_len + 1]
 
 
-def smooth2d(A, sigma=3):
+def smooth2d(A: np.ndarray, sigma: int = 3) -> np.ndarray:
     # copied from https://matplotlib.org/stable/gallery/misc/demo_agg_filter.html
-    window_len = max(int(sigma), 3) * 2 + 1
+    window_len = max(sigma, 3) * 2 + 1
     A = np.apply_along_axis(smooth1d, 0, A, window_len)
     return np.apply_along_axis(smooth1d, 1, A, window_len)
 
 
-class BaseFilter:
+class BaseFilter(abc.ABC):
     # copied from https://matplotlib.org/stable/gallery/misc/demo_agg_filter.html
-    def get_pad(self, dpi):
+    def get_pad(self, dpi: int) -> int:
         return 0
 
-    def process_image(self, padded_src, dpi):
-        raise NotImplementedError("Should be overridden by subclasses")
+    @abc.abstractmethod
+    def process_image(self, padded_src: np.ndarray, dpi: int) -> np.ndarray:
+        raise NotImplementedError("Should be overridden by child subclasses")
 
-    def __call__(self, im, dpi):
+    def __call__(self, im: np.ndarray, dpi: int) -> Tuple[np.ndarray, int, int]:
         pad = self.get_pad(dpi)
         padded_src = np.pad(im, [(pad, pad), (pad, pad), (0, 0)], "constant")
         tgt_image = self.process_image(padded_src, dpi)
@@ -41,13 +49,13 @@ class BaseFilter:
 
 class OffsetFilter(BaseFilter):
     # copied from https://matplotlib.org/stable/gallery/misc/demo_agg_filter.html
-    def __init__(self, offsets=(0, 0)):
+    def __init__(self, offsets: Tuple[int, int] = (0, 0)) -> None:
         self.offsets = offsets
 
-    def get_pad(self, dpi):
+    def get_pad(self, dpi: int) -> int:
         return int(max(self.offsets) / 72 * dpi)
 
-    def process_image(self, padded_src, dpi):
+    def process_image(self, padded_src: np.ndarray, dpi: int) -> np.ndarray:
         ox, oy = self.offsets
         a1 = np.roll(padded_src, int(ox / 72 * dpi), axis=1)
         return np.roll(a1, -int(oy / 72 * dpi), axis=0)
@@ -57,44 +65,60 @@ class GaussianFilter(BaseFilter):
     """Simple Gaussian filter."""
 
     # copied from https://matplotlib.org/stable/gallery/misc/demo_agg_filter.html
-    def __init__(self, sigma, alpha=0.5, color=(0, 0, 0)):
+    def __init__(
+        self,
+        sigma: int,
+        alpha: float = 0.5,
+        color: Tuple[int, int, int] = (0, 0, 0),
+    ) -> None:
         self.sigma = sigma
         self.alpha = alpha
         self.color = color
 
-    def get_pad(self, dpi):
+    def get_pad(self, dpi: int) -> int:
         return int(self.sigma * 3 / 72 * dpi)
 
-    def process_image(self, padded_src, dpi):
+    def process_image(self, padded_src: np.ndarray, dpi: int) -> np.ndarray:
         tgt_image = np.empty_like(padded_src)
         tgt_image[:, :, :3] = self.color
-        tgt_image[:, :, 3] = smooth2d(padded_src[:, :, 3] * self.alpha, self.sigma / 72 * dpi)
+        tgt_image[:, :, 3] = smooth2d(padded_src[:, :, 3] * self.alpha, int(self.sigma / 72 * dpi))
         return tgt_image
 
 
 class DropShadowFilter(BaseFilter):
     # copied from https://matplotlib.org/stable/gallery/misc/demo_agg_filter.html
-    def __init__(self, sigma, alpha=0.3, color=(0, 0, 0), offsets=(0, 0)):
+    def __init__(
+        self,
+        sigma: int,
+        alpha: float = 0.3,
+        color: Tuple[int, int, int] = (0, 0, 0),
+        offsets: Tuple[int, int] = (0, 0),
+    ) -> None:
         self.gauss_filter = GaussianFilter(sigma, alpha, color)
         self.offset_filter = OffsetFilter(offsets)
 
-    def get_pad(self, dpi):
+    def get_pad(self, dpi: int) -> int:
         return max(self.gauss_filter.get_pad(dpi), self.offset_filter.get_pad(dpi))
 
-    def process_image(self, padded_src, dpi):
+    def process_image(self, padded_src: np.ndarray, dpi: int) -> np.ndarray:
         t1 = self.gauss_filter.process_image(padded_src, dpi)
         return self.offset_filter.process_image(t1, dpi)
 
 
 # Save a GIF using logged images
-def save_gif_from_array(img_list, channels, path="", interval=200):
+def save_gif_from_array(
+    img_list: np.ndarray,
+    channels: int,
+    path: str = "",
+    interval: int = 200,
+) -> None:
     # Transform images from [-1,1] to [0, 255]
     # image list is of shape(frame,batch,h,w,channels)
 
     if channels == 1:
         img_list = np.squeeze(img_list, -1)  # new shape(frame,h,w)
 
-    imgs = []
+    imgs: List[Image.Image] = []
     for im in img_list:
         im = np.array(im)
         im = (im + 1) * 127.5
@@ -102,52 +126,62 @@ def save_gif_from_array(img_list, channels, path="", interval=200):
         im = Image.fromarray(im)
         imgs.append(im)
 
-    imgs = iter(imgs)
+    imgs_iter = iter(imgs)
 
     # Extract first image from iterator
-    img = next(imgs)
+    img = next(imgs_iter)
 
     # Append the other images and save as GIF
     img.save(fp=path, format="GIF", append_images=imgs, save_all=True, duration=interval, loop=0)
 
 
-def save_gif_from_figure_images(img_list, path="", interval=200):
+def save_gif_from_figure_images(img_list: np.ndarray, path: str = "", interval: int = 200) -> None:
     # images are in range [0,255]
     # image list is of shape(frame,batch,h,w,channels)
 
     img_list = np.squeeze(img_list, 1)  # new shape(frame,h,w,channels)
 
-    imgs = []
+    imgs: List[Image.Image] = []
     for im in img_list:
         im = np.array(im)
         im = np.clip(im, 0, 255).astype(np.uint8)
         im = Image.fromarray(im)
         imgs.append(im)
 
-    imgs = iter(imgs)
+    imgs_iter = iter(imgs)
 
     # Extract first image from iterator
-    img = next(imgs)
+    img = next(imgs_iter)
 
     # Append the other images and save as GIF
     img.save(fp=path, format="GIF", append_images=imgs, save_all=True, duration=interval, loop=0)
 
 
 # Save a GIF using logged images
-def save_gif_from_images(img_list, channels, path="", interval=200):
+def save_gif_from_images(
+    img_list: np.ndarray,
+    channels: int,
+    path: str = "",
+    interval: int = 200,
+) -> None:
     img, *imgs = [Image.open(f) for f in img_list]
 
     # Append the other images and save as GIF
     img.save(fp=path, format="GIF", append_images=imgs, save_all=True, duration=interval, loop=0)
 
 
-def PlotSample(img, ax, title=None, returnFigure=False, threshold=-1):
+def PlotSample(
+    img: Union[np.ndarray, tf.Tensor],
+    ax: plt.Axes,
+    title: Optional[str] = None,
+    returnFigure: bool = False,
+    threshold: SupportsFloat = -1,
+) -> None:
     """
     img is expected to be:
       - scaled to [-1,1]
       - of shape (1, h, w, channels)
     """
-
     img = np.where(img <= threshold, np.nan, img)
 
     if len(img.shape) == 4:  # (batch, height, width, channels)
@@ -161,7 +195,12 @@ def PlotSample(img, ax, title=None, returnFigure=False, threshold=-1):
         ax.imshow(unscaled_img)
 
 
-def PlotDepthMap(depth, threshold, fileName=None, returnFigure=False):
+def PlotDepthMap(
+    depth: np.ndarray,
+    threshold: SupportsFloat,
+    fileName: Optional[str] = None,
+    returnFigure: bool = False,
+) -> Optional[Figure]:
     output = {}
     fig = plt.figure(figsize=(5, 5))
 
@@ -188,7 +227,11 @@ def PlotDepthMap(depth, threshold, fileName=None, returnFigure=False):
     return output
 
 
-def PlotHistogramm(img, title=None, returnFigure=False):
+def PlotHistogramm(
+    img: np.ndarray,
+    title: Optional[str] = None,
+    returnFigure: bool = False,
+) -> Dict[str, Figure]:
     """
     img is expected to be:
       - scaled to [-1,1]
@@ -217,20 +260,20 @@ def PlotHistogramm(img, title=None, returnFigure=False):
 
 
 def PointCloud(
-    depth,
-    ax,
-    img=None,
-    step=1,
-    elevation=0,
-    azimuth=0,
-    threshold=-1,
-    hide_axis_and_grid=False,
-    linewidths=0.2,
-    drop_shaddow=False,
-    correlate_depth_img=False,
-    place_on_ground=False,
-    marker=".",
-):
+    depth: np.ndarray,
+    ax: plt.Axes,
+    img: Optional[np.ndarray] = None,
+    step: int = 1,
+    elevation: int = 0,
+    azimuth: int = 0,
+    threshold: SupportsFloat = -1,
+    hide_axis_and_grid: bool = False,
+    linewidths: SupportsFloat = 0.2,
+    drop_shaddow: bool = False,
+    correlate_depth_img: bool = False,
+    place_on_ground: bool = False,
+    marker: str = ".",
+) -> None:
     depth = depth[..., -1]
     if img is not None:
         img = (img + 1) / 2
@@ -300,23 +343,23 @@ def PointCloud(
 
 
 def PlotPointCloud(
-    depth,
-    img=None,
-    step=1,
-    title=None,
-    returnFigure=False,
-    threshold=-1,
-    fileName=None,
-    hide_axis_and_grid=False,
-    linewidths=0.2,
-    elevations=[10, 10, 10, 90, 10, 10],
-    azimuths=[-90, -45, 0, 0, 45, 90],
-    drop_shaddow=False,
-    fig_size=None,
-    correlate_depth_img=False,
-    place_on_ground=False,
-    marker=".",
-):
+    depth: np.ndarray,
+    img: Optional[np.ndarray] = None,
+    step: int = 1,
+    title: Optional[str] = None,
+    returnFigure: bool = False,
+    threshold: SupportsFloat = -1,
+    fileName: Optional[str] = None,
+    hide_axis_and_grid: bool = False,
+    linewidths: SupportsFloat = 0.2,
+    elevations: List[int] = [10, 10, 10, 90, 10, 10],
+    azimuths: List[int] = [-90, -45, 0, 0, 45, 90],
+    drop_shaddow: bool = False,
+    fig_size: Optional[Tuple[int, int]] = None,
+    correlate_depth_img: bool = False,
+    place_on_ground: bool = False,
+    marker: str = ".",
+) -> Dict[str, Figure]:
     """
     plots a 3D point cloud from a given RGBD or grayscale image
     RGBD [-1:1]
@@ -364,35 +407,32 @@ def PlotPointCloud(
 
 
 def PlotDualPointCloud(
-    depth1,
-    depth2,
-    img1=None,
-    img2=None,
-    step=1,
-    title=None,
-    returnFigure=False,
-    threshold=-1,
-    fileName=None,
-    hide_axis_and_grid=False,
-    linewidths=0.2,
-    elevations=[5, 5, 5, 90, 5, 5],
-    azimuths=[-90, -45, 0, 0, 45, 90],
-    drop_shaddow=False,
-    fig_size=None,
-    correlate_depth_img=False,
-    place_on_ground=False,
-    marker=".",
-):
-    """plots a 3D point cloud from a given RGBD or grayscale image"""
-
+    depth1: np.ndarray,
+    depth2: np.ndarray,
+    img1: Optional[np.ndarray] = None,
+    img2: Optional[np.ndarray] = None,
+    step: int = 1,
+    title: Optional[str] = None,
+    returnFigure: bool = False,
+    threshold: SupportsFloat = -1,
+    fileName: Optional[str] = None,
+    hide_axis_and_grid: bool = False,
+    linewidths: SupportsFloat = 0.2,
+    elevations: List[int] = [5, 5, 5, 90, 5, 5],
+    azimuths: List[int] = [-90, -45, 0, 0, 45, 90],
+    drop_shaddow: bool = False,
+    fig_size: Optional[Tuple[int, int]] = None,
+    correlate_depth_img: bool = False,
+    place_on_ground: bool = False,
+    marker: str = ".",
+) -> Dict[str, Figure]:
+    """Plots a 3D point cloud from a given RGBD or grayscale image"""
     assert len(elevations) == len(azimuths)
     num_plots = len(elevations)
     output = {}
 
-    if fig_size is None:
-        fig = plt.figure(figsize=(num_plots * 5, 8))
-    else:
-        fig = plt.figure(figsize=fig_size)
+    fig = plt.figure(figsize=(num_plots * 5, 8)) if fig_size is None else plt.figure(figsize=fig_size)
+
     if title is not None:
         fig.suptitle(title, fontsize=20)
 
@@ -443,9 +483,10 @@ def PlotDualPointCloud(
     return output
 
 
-def plot_to_image(figure):
+def plot_to_image(figure: Figure) -> tf.Tensor:
     """Converts the matplotlib plot specified by 'figure' to a PNG image and
-    returns it. The supplied figure is closed and inaccessible after this call."""
+    returns it. The supplied figure is closed and inaccessible after this call.
+    """
     # Save the plot to a PNG in memory.
     buf = io.BytesIO()
     plt.savefig(buf, format="png", bbox_inches="tight")
@@ -459,8 +500,13 @@ def plot_to_image(figure):
 
 
 # TODO: timestep 0 is not plotted.
-def PlotReverseDiffusion(x0_condition, xt_frames, timesteps, numberOfPlots=10, fileName=False):
-    output = {}
+def PlotReverseDiffusion(
+    x0_condition: Union[np.ndarray, tf.Tensor],
+    xt_frames: Union[np.ndarray, tf.Tensor],
+    timesteps: np.ndarray,
+    numberOfPlots: int = 10,
+    fileName: Optional[str] = None,
+) -> None:
     frames, height, width, channel = np.shape(xt_frames)
     numberOfPlots = min(numberOfPlots, frames)
     fig = plt.figure(figsize=(numberOfPlots * 3, 3))
@@ -475,17 +521,22 @@ def PlotReverseDiffusion(x0_condition, xt_frames, timesteps, numberOfPlots=10, f
             PlotSample(tf.expand_dims(frame, axis=0), ax, title=f"t = {t}")
             plot_counter += 1
 
-    if fileName:
+    if fileName is not None:
         plt.savefig(os.path.join(fileName), bbox_inches="tight")
         plt.close(fig)
     else:
         plt.show()
-    return output
 
 
 def PlotBatchedSample(
-    x0_condition, x0_diffusion_input, samplerOutput, num_samples=-1, run_output_dir="", postfix="", epoch=None
-):
+    x0_condition: Union[np.ndarray, tf.Tensor],
+    x0_diffusion_input: Union[np.ndarray, tf.Tensor],
+    samplerOutput: Dict[str, Union[np.ndarray, tf.Tensor]],
+    num_samples: int = -1,
+    run_output_dir: str = "",
+    postfix: str = "",
+    epoch: Optional[int] = None,
+) -> None:
     batch_size, frames, height, width, channels = samplerOutput["xt_frames"].shape
     samples_to_plot = batch_size if num_samples == -1 else min(batch_size, num_samples)
 
@@ -493,7 +544,11 @@ def PlotBatchedSample(
         fileName_pc = os.path.join(run_output_dir, "illustrations", f"pointcloud_{postfix}_{i}.png")
         fileName_rd = os.path.join(run_output_dir, "illustrations", f"reverse_diffusion_{postfix}_{i}.png")
         PlotReverseDiffusion(
-            x0_condition[i, ...], sample, samplerOutput["t_frames"], numberOfPlots=8, fileName=fileName_rd
+            x0_condition[i, ...],
+            sample,
+            samplerOutput["t_frames"],
+            numberOfPlots=8,
+            fileName=fileName_rd,
         )
         PlotDualPointCloud(
             x0_diffusion_input[i, ...],
@@ -509,16 +564,16 @@ def PlotBatchedSample(
 
 
 def PlotBatchedSampleSuperRes(
-    x0_condition,
-    x0_diffusion_input,
-    samplerOutput,
-    condition_format,
-    diffusion_format,
-    num_samples=-1,
-    run_output_dir="",
-    postfix="",
-    epoch=None,
-):
+    x0_condition: Union[np.ndarray, tf.Tensor],
+    x0_diffusion_input: Union[np.ndarray, tf.Tensor],
+    samplerOutput: Dict[str, Union[np.ndarray, tf.Tensor]],
+    condition_format: str,
+    diffusion_format: str,
+    num_samples: int = -1,
+    run_output_dir: str = "",
+    postfix: str = "",
+    epoch: Optional[int] = None,
+) -> None:
     batch_size, height, width, channels = samplerOutput["x0"].shape
     samples_to_plot = batch_size if num_samples == -1 else min(batch_size, num_samples)
 
@@ -563,18 +618,17 @@ def PlotBatchedSampleSuperRes(
 
 
 def PlotSuperresComparison(
-    depth_low_res,
-    depth_high_res_orig,
-    depth_high_res_generated,
-    rgb_low_res=None,
-    rgb_high_res_orig=None,
-    rgb_high_res_generated=None,
-    threshold=-1,
-    fileName=None,
-):
+    depth_low_res: Union[np.ndarray, tf.Tensor],
+    depth_high_res_orig: Union[np.ndarray, tf.Tensor],
+    depth_high_res_generated: Union[np.ndarray, tf.Tensor],
+    rgb_low_res: Optional[Union[np.ndarray, tf.Tensor]] = None,
+    rgb_high_res_orig: Optional[Union[np.ndarray, tf.Tensor]] = None,
+    rgb_high_res_generated: Optional[Union[np.ndarray, tf.Tensor]] = None,
+    threshold: SupportsFloat = -1,
+    fileName: Optional[str] = None,
+) -> None:
     plot_rgb = rgb_low_res is not None and rgb_high_res_orig is not None and rgb_high_res_generated is not None
     shape = depth_high_res_orig.shape
-    output = {}
     columns = 5
     rows = 2 if plot_rgb else 1
     fig = plt.figure(figsize=(20, 5))
@@ -622,4 +676,3 @@ def PlotSuperresComparison(
         plt.close(fig)
     else:
         plt.show()
-    return output

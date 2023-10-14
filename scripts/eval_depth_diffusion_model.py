@@ -1,4 +1,6 @@
 import argparse
+
+# fmt: off
 parser = argparse.ArgumentParser(description="Evaluate the Variational Lower Bound (VLB), L1 and L2 distance of a trained depth diffusion model an a dataset")
 parser.add_argument("-b", "--batch_size", type=int, default=16, help="Number of samples that are put throught the model simultaniously. The bigger the more memory is required by the GPU.")
 parser.add_argument("-n", "--number_samples", type=int, default=None, help="Number of samples to be loaded from the dataset. If None or if -n is larger than the available sample, the entire set is loaded.")
@@ -9,9 +11,9 @@ parser.add_argument("-bd","--base_dir", default="/tf", help="Base directory for 
 parser.add_argument("checkpoint", help="Path to the checkpoint that should be restored.")
 parser.add_argument("config_file", help="Path to the configfile that has been generated during training")
 args = parser.parse_args()
+# fmt: on
 
 import logging
-
 
 logging.basicConfig(level="INFO", format="[%(levelname)s | %(asctime)s] - %(message)s", datefmt="%I:%M:%S %p")
 logging.info("---------------------------------------------------------")
@@ -21,27 +23,23 @@ logging.debug(args)
 
 import os
 
-
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Only print errors, not warnings or infos
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"  # Enable EXR
 
 import sys
-
 
 # Get the parent directory to be able to import the files located in imports
 current = os.path.dirname(os.path.realpath(__file__))
 parent = os.path.dirname(current)
 sys.path.append(parent)
 
-import tensorflow as tf
-
 import DeepSaki
+import tensorflow as tf
+import yaml
+
 import imports.dataset as cdd_dataset
 import imports.helper as cdd_helper
 import imports.model as cdd_model
-import tensorflow_addons as tfa
-import yaml
-
 
 os.chdir(args.base_dir)
 assert os.path.isfile(args.checkpoint + ".index"), f"No such file: '{args.checkpoint}'"
@@ -89,20 +87,7 @@ test_ds = cdd_dataset.GetDatasetDepthDiffusionStreamed(
 #############################################################
 ###### Reload Model Checkpoint
 #############################################################
-if CONFIG["OPTIMIZER"] == "adam":
-    optimizer = tf.keras.optimizers.Adam(learning_rate=CONFIG["LEARNING_RATE"])
-elif CONFIG["OPTIMIZER"] == "adamW":
-    optimizer = tfa.optimizers.AdamW(weight_decay=CONFIG["WEIGHT_DECAY"], learning_rate=CONFIG["LEARNING_RATE"])
-elif CONFIG["OPTIMIZER"] == "sgd":
-    optimizer = tf.keras.optimizers.SGD(learning_rate=CONFIG["LEARNING_RATE"], momentum=0.9)
-elif CONFIG["OPTIMIZER"] == "sgdW":
-    optimizer = tfa.optimizers.SGDW(
-        weight_decay=CONFIG["WEIGHT_DECAY"], learning_rate=CONFIG["LEARNING_RATE"], momentum=0.9
-    )
-elif CONFIG["OPTIMIZER"] == "yogi":
-    optimizer = tfa.optimizers.Yogi(learning_rate=CONFIG["LEARNING_RATE"])
-else:
-    raise Exception(f'Undefined optimizer provided: {CONFIG["OPTIMIZER"]}')
+optimizer = cdd_helper.get_optimizer(CONFIG["OPTIMIZER"], CONFIG["LEARNING_RATE"], CONFIG["WEIGHT_DECAY"])
 
 with strategy.scope():
     if CONFIG["MODEL"] == "unet":

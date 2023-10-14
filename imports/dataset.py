@@ -1,34 +1,44 @@
 import logging
 import os
 import random
-
-import numpy as np
-import tensorflow as tf
+from typing import Callable
+from typing import Generator
+from typing import List
+from typing import Optional
+from typing import Tuple
+from typing import Union
 
 import cv2
+import numpy as np
+import tensorflow as tf
 import tensorflow_addons as tfa
 
 
 def get_preprocess_superres_func(
-    condition_format,  # rgb, depth, rgbd
-    diffusion_format,  # rgb, depth, rgbd
-    dtype,
-    low_res_height_width,
-):
-    """Function to return preprocessing function for superresolution dataset, that returns a high-res and a low-res data sample.
+    condition_format: str,
+    diffusion_format: str,
+    dtype: Union[tf.DType, np.dtype],
+    low_res_height_width: Tuple[int, int],
+) -> Callable[[tf.Tensor], Tuple[tf.Tensor, tf.Tensor]]:
+    """Get preprocessing function for the super resolution model.
 
     Args:
-        dtype (numpy.dtype): dtype to which the data should be casted to.
-        low_res_height_width (list): (height, width) to which the low resolution image shall be resized to using nearest neighbor interpolation.
+        condition_format (str): Data format of the condition input: [ rgb | depth | rgbd ]
+        diffusion_format (str): Data format of the diffusion input: [ rgb | depth | rgbd ]
+        dtype (Union[tf.DType, np.dtype]): dtype to which the data should be casted to.
+        low_res_height_width (Tuple[int, int]): (height, width) to which the low resolution image shall be resized to
+            using nearest neighbor interpolation.
 
     Returns:
-        func: Function that resizes the spatial width of RGBD data using nearest neighbor interpolation to return a high resolution version and a low resolution version of the input and casts to the dtype provided.
+        Callable[[tf.Tensor], Tuple[tf.Tensor, tf.Tensor]]: Function that resizes the spatial width of RGBD data using
+            nearest neighbor interpolation to return a high resolution version and a low resolution version of the
+            input and casts to the dtype provided.
     """
     # This means if condition RGBD, load RGBD highres, and if diffusion is depth onl, only return depth for high res
 
     high_res_is_rgbd = condition_format != diffusion_format or condition_format == "rgbd" or diffusion_format == "rgbd"
 
-    def preprocess_superres(high_res):
+    def _preprocess_superres(high_res: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         if high_res_is_rgbd:
             high_res_renders, high_res_depths = tf.split(high_res, [3, 1], axis=-1)
         elif diffusion_format == "depth":
@@ -64,10 +74,28 @@ def get_preprocess_superres_func(
 
         return cond, diff
 
-    return preprocess_superres
+    return _preprocess_superres
 
 
-def scale_tensor(input_tensor, scaleFactorMin, scaleFactorMax, method, padding_value=0):
+def scale_tensor(
+    input_tensor: tf.Tensor,
+    scaleFactorMin: float,
+    scaleFactorMax: float,
+    method: tf.image.ResizeMethod,
+    padding_value: int = 0,
+) -> tf.Tensor:
+    """Randomly scales a person depicted in the input tensor regardles of the format beeing `depth`, `rgb` or `rgbd`.
+
+    Args:
+        input_tensor (tf.Tensor): Input tensor to be scaled.
+        scaleFactorMin (float): Minimum scaling factor
+        scaleFactorMax (float): Maximum scaling factor
+        method (tf.image.ResizeMethod): Method to resize / resample the tensor.
+        padding_value (int, optional): Value used for padding the scaled tensor. Defaults to 0.
+
+    Returns:
+        tf.Tensor: Tensor containing a scaled version of the person depicted in the tensor image.
+    """
     tensor_shape = input_tensor.shape
     scaleFactor = np.random.uniform(low=scaleFactorMin, high=scaleFactorMax)
     heightReductionOneSided = int(
@@ -91,7 +119,23 @@ def scale_tensor(input_tensor, scaleFactorMin, scaleFactorMax, method, padding_v
     return tf.pad(output_tensor, padding_tensor, constant_values=padding_value)
 
 
-def shift_tensor(input_tensor, verticalShiftMax, horicontalShiftMax, padding_value=0):
+def shift_tensor(
+    input_tensor: tf.Tensor,
+    verticalShiftMax: float,
+    horicontalShiftMax: float,
+    padding_value: int = 0,
+) -> tf.Tensor:
+    """Randomly shifts a person depicted in the input tensor regardles of the format beeing `depth`, `rgb` or `rgbd`.
+
+    Args:
+        input_tensor (tf.Tensor): Input tensor to be shifted.
+        verticalShiftMax (float): Maximum vertical shift.
+        horicontalShiftMax (float): Maximum horicontal shift.
+        padding_value (int, optional): Value used for padding the shifted tensor. Defaults to 0.
+
+    Returns:
+        tf.Tensor: Tensor containing a shifted version of the person depicted in the tensor image.
+    """
     tensor_shape = input_tensor.shape
     heightPaddingOneSided = int((tensor_shape[1] * verticalShiftMax) // 2)  # one sided padding
     widthPaddingOneSided = int(
@@ -110,26 +154,52 @@ def shift_tensor(input_tensor, verticalShiftMax, horicontalShiftMax, padding_val
 
 
 def get_augment_func(
-    condition_format,  # rgb, depth, rgbd
-    diffusion_format,  # rgb, depth, rgbd
-    apply_flip=True,
-    apply_scale=True,
-    apply_shift=True,
-    apply_rgb_blur=True,
-    apply_depth_blur=True,
-    flipProbability=0.5,
-    scaleProbability=1.0,
-    shiftProbability=1.0,
-    blurProbability=0.5,
-    scaleFactorMax=1.0,
-    scaleFactorMin=0.8,
-    horicontalShiftMax=0.2,
-    verticalShiftMax=0.1,
-    dtype=np.dtype("float32"),
-    depth_mask_threshold=-0.8,
-):
+    condition_format: str,
+    diffusion_format: str,
+    apply_flip: bool = True,
+    apply_scale: bool = True,
+    apply_shift: bool = True,
+    apply_rgb_blur: bool = True,
+    apply_depth_blur: bool = True,
+    flipProbability: float = 0.5,
+    scaleProbability: float = 1.0,
+    shiftProbability: float = 1.0,
+    blurProbability: float = 0.5,
+    scaleFactorMax: float = 1.0,
+    scaleFactorMin: float = 0.8,
+    horicontalShiftMax: float = 0.2,
+    verticalShiftMax: float = 0.1,
+    dtype: Union[tf.DType, np.dtype] = np.dtype("float32"),
+    depth_mask_threshold: float = -0.8,
+) -> Callable[[tf.Tensor, tf.Tensor], Tuple[tf.Tensor, tf.Tensor]]:
+    """Get function implementing various augmentations.
+
+    Args:
+        condition_format (str): Data format of the condition input: [ rgb | depth | rgbd ]
+        diffusion_format (str): Data format of the diffusion input: [ rgb | depth | rgbd ]
+        apply_flip (bool, optional): If true, randomly flip tensor. Defaults to True.
+        apply_scale (bool, optional): If true, randomly scale tensor. Defaults to True.
+        apply_shift (bool, optional): If true, randomly shift tensor. Defaults to True.
+        apply_rgb_blur (bool, optional): If true, randomly blur image. Defaults to True.
+        apply_depth_blur (bool, optional): If true, randomly blur depth. Defaults to True.
+        flipProbability (float, optional): Probability to flip tensor. Defaults to 0.5.
+        scaleProbability (float, optional): Probability to scale tensor. Defaults to 1.0.
+        shiftProbability (float, optional): Probability to shift tensor. Defaults to 1.0.
+        blurProbability (float, optional): Probability to blur image. Defaults to 0.5.
+        scaleFactorMax (float, optional): Maximum scaling factor to scale tensor. Defaults to 1.0.
+        scaleFactorMin (float, optional): Minimum scaling factor to scale tensor. Defaults to 0.8.
+        horicontalShiftMax (float, optional): Maximum shifting factor for horizontal shift. Defaults to 0.2.
+        verticalShiftMax (float, optional): Maximum shifting factor for vertical shift. Defaults to 0.1.
+        dtype (Union[tf.DType, np.dtype], optional): dtype to which the data should be casted to.
+            Defaults to np.dtype("float32").
+        depth_mask_threshold (float, optional): Threshold for removing background pixel. Defaults to -0.8.
+
+    Returns:
+        Callable[[tf.Tensor, tf.Tensor], Tuple[tf.Tensor, tf.Tensor]]: Augmentation function.
+    """
+
     @tf.function
-    def augment(cond, diff):
+    def augment(cond: tf.Tensor, diff: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         # flip left-right
         if apply_flip and np.random.binomial(n=1, p=flipProbability):
             cond = tf.image.flip_left_right(cond)
@@ -249,7 +319,23 @@ def get_augment_func(
     return augment
 
 
-def _read_render(file, cropWidthHalf, img_height_width, dtype):
+def _read_render(
+    file: str,
+    cropWidthHalf: bool,
+    img_height_width: Tuple[int, int],
+    dtype: Union[tf.DType, np.dtype],
+) -> np.ndarray:
+    """Read render file aka. RGB.
+
+    Args:
+        file (str): path to file.
+        cropWidthHalf (bool): If true, width is center cropped into half the width.
+        img_height_width (Tuple[int, int]): Resize image to (height, width)
+        dtype (Union[tf.DType, np.dtype]): dtype to which the data should be casted to.
+
+    Returns:
+        np.ndarray: RGB image.
+    """
     render = cv2.imread(file)[:, :, ::-1]
     if cropWidthHalf:
         height, width, _ = np.shape(render)
@@ -261,7 +347,28 @@ def _read_render(file, cropWidthHalf, img_height_width, dtype):
     return np.divide(render, 127.5, dtype=dtype) - 1
 
 
-def _read_depth(file, cropWidthHalf, img_height_width, dtype, format="exr"):
+def _read_depth(
+    file: str,
+    cropWidthHalf: bool,
+    img_height_width: Tuple[int, int],
+    dtype: Union[tf.DType, np.dtype],
+    format: str = "exr",
+) -> np.ndarray:
+    """Read depth map file.
+
+    Args:
+        file (str): path to file.
+        cropWidthHalf (bool): If true, width is center cropped into half the width.
+        img_height_width (Tuple[int, int]): Resize image to (height, width)
+        dtype (Union[tf.DType, np.dtype]): dtype to which the data should be casted to.
+        format (str, optional): File format: [ exr | png ]. Defaults to "exr".
+
+    Raises:
+        NotImplementedError: _description_
+
+    Returns:
+        np.ndarray: Depth map.
+    """
     if format == "exr":
         depth = cv2.imread(file, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
     elif format == "png":
@@ -279,59 +386,70 @@ def _read_depth(file, cropWidthHalf, img_height_width, dtype, format="exr"):
 
 
 def prepare_streamed_dataset(
-    readRgb,
-    readDepth,
-    datasetDirectory,
-    img_height_width,
-    NumberOfSamplesToRead,
-    dtype,
-    returnRgbd,
-    cropWidthHalf,
-    shuffle,
-):
+    readRgb: bool,
+    readDepth: bool,
+    datasetDirectory: str,
+    img_height_width: Tuple[int, int],
+    NumberOfSamplesToRead: Optional[int],
+    dtype: Union[tf.DType, np.dtype],
+    returnRgbd: bool,
+    cropWidthHalf: bool,
+    shuffle: bool,
+) -> tf.data.Dataset:
+    """Get streamed dataset yielded from a generator.
+
+    Args:
+        readRgb (bool): If true, read RGB data.
+        readDepth (bool): If True, read depth map.
+        datasetDirectory (str): Path to directory containing dataset.
+        img_height_width (Tuple[int, int]): Resize data to (height, width)
+        NumberOfSamplesToRead (Optional[int]): Number of data samples to read from the datasset.
+        dtype (Union[tf.DType, np.dtype]): dtype to which the data should be casted to.
+        returnRgbd (bool): If true, RGB image and depth map are concatenated into single data structure.
+        cropWidthHalf (bool): If true, width is center cropped into half the width.
+        shuffle (bool): If true, dataset is shuffled.
+
+    Returns:
+        tf.data.Dataset: Dataset.
+
+    """
     assert readRgb and readDepth if returnRgbd else True
 
-    def list_full_paths(directory):
+    def _list_full_paths(directory: str) -> List[str]:
         return [os.path.join(directory, file) for file in os.listdir(directory)]
 
-    numberOfSamples = 0
+    numberOfSamples: int = 0
+    render_filenames: List[str] = []
+    depth_filenames: List[str] = []
 
     if readRgb:
         render_path = os.path.join(datasetDirectory, "RENDER")
-        render_filenames = sorted(list_full_paths(render_path))
+        render_filenames = sorted(_list_full_paths(render_path))
         numberOfSamples = np.shape(render_filenames)[0]
-    else:
-        render_filenames = None
 
     if readDepth:
         depth_path = os.path.join(datasetDirectory, "DEPTH_RENDER_EXR")
-        depth_filenames = sorted(list_full_paths(depth_path))
+        depth_filenames = sorted(_list_full_paths(depth_path))
         if numberOfSamples == 0:
             numberOfSamples = np.shape(depth_filenames)[0]
         else:
             assert numberOfSamples == np.shape(depth_filenames)[0]  # ensure depth and rgb have same number of samples
-    else:
-        depth_filenames = None
 
-    if NumberOfSamplesToRead:
-        # in case more samples are requested as there are available
-        readCount = min(numberOfSamples, NumberOfSamplesToRead)
-    else:
-        readCount = numberOfSamples
+    readCount = min(numberOfSamples, NumberOfSamplesToRead) if NumberOfSamplesToRead is not None else numberOfSamples
 
     logging.info(f"{readCount} of {numberOfSamples} samples will be streamed.")
 
-    def _get_generator():
+    def _get_generator() -> Callable[[], Generator]:
         if readRgb and readDepth:
-            files = list(zip(render_filenames, depth_filenames))[0:readCount]
+            files_combined = list(zip(render_filenames, depth_filenames))[0:readCount]
             # initial shuffle, that is applied to train and test.
-            random.shuffle(files)
+            random.shuffle(files_combined)
 
-            def _load_rgb_depth_generator():
+            def _load_rgb_depth_generator() -> Generator[Union[tf.Tensor, Tuple[np.ndarray, np.ndarray]], None, None]:
                 # randomize Filenames every epoch to randomize batches!
                 if shuffle:
-                    random.shuffle(files)
-                for render_file, depth_file in files:
+                    random.shuffle(files_combined)
+                for render_file, depth_file in files_combined:
                     render = _read_render(render_file, cropWidthHalf, img_height_width, dtype)
                     depth = _read_depth(depth_file, cropWidthHalf, img_height_width, dtype)
                     if returnRgbd and readRgb and readDepth:
@@ -342,28 +460,28 @@ def prepare_streamed_dataset(
 
             return _load_rgb_depth_generator
         elif readRgb and not readDepth:
-            files = render_filenames[0:readCount]
+            files_render = render_filenames[0:readCount]
             # initial shuffle, that is applied to train and test.
-            random.shuffle(files)
+            random.shuffle(files_render)
 
-            def _load_rgb_generator():
+            def _load_rgb_generator() -> Generator[np.ndarray, None, None]:
                 # randomize Filenames every epoch to randomize batches!
                 if shuffle:
-                    random.shuffle(files)
-                for render_file in files:
+                    random.shuffle(files_render)
+                for render_file in files_render:
                     yield _read_render(render_file, cropWidthHalf, img_height_width, dtype)
 
             return _load_rgb_generator
         elif readDepth and not readRgb:
-            files = depth_filenames[0:readCount]
+            files_depth = depth_filenames[0:readCount]
             # initial shuffle, that is applied to train and test.
-            random.shuffle(files)
+            random.shuffle(files_depth)
 
-            def _load_depth_generator():
+            def _load_depth_generator() -> Generator[np.ndarray, None, None]:
                 # randomize Filenames every epoch to randomize batches!
                 if shuffle:
-                    random.shuffle(files)
-                for depth_file in files:
+                    random.shuffle(files_depth)
+                for depth_file in files_depth:
                     yield _read_depth(depth_file, cropWidthHalf, img_height_width, dtype)
 
             return _load_depth_generator
@@ -387,20 +505,43 @@ def prepare_streamed_dataset(
 
 
 def GetDatasetDepthDiffusionStreamed(
-    datasetDirectory,
-    batchSize,
-    img_height_width,
-    NumberOfSamplesToRead=None,
-    dtype=np.dtype("float32"),
-    drop_remainder=False,
-    cropWidthHalf=False,
-    shuffle=True,
-    apply_flip=False,
-    apply_scale=False,
-    apply_shift=False,
-    apply_rgb_blur=False,
-    apply_depth_blur=False,
-):
+    datasetDirectory: str,
+    batchSize: int,
+    img_height_width: Tuple[int, int],
+    NumberOfSamplesToRead: Optional[int] = None,
+    dtype: Union[tf.DType, np.dtype] = np.dtype("float32"),
+    drop_remainder: bool = False,
+    cropWidthHalf: bool = False,
+    shuffle: bool = True,
+    apply_flip: bool = False,
+    apply_scale: bool = False,
+    apply_shift: bool = False,
+    apply_rgb_blur: bool = False,
+    apply_depth_blur: bool = False,
+) -> tf.data.Dataset:
+    """Get streamed dataset to train/test the depth diffusion model.
+
+    Args:
+        datasetDirectory (str): Path to directory containing dataset.
+        batchSize (int): Desired batch size of the dataset.
+        img_height_width (Tuple[int, int]): Resize data to (height, width)
+        NumberOfSamplesToRead (Optional[int], optional): Number of data samples to read from the datasset.
+            Defaults to None.
+        dtype (Union[tf.DType, np.dtype], optional): dtype to which the data should be casted to.
+            Defaults to np.dtype("float32").
+        drop_remainder (bool, optional): If true, remaining samples that do not fill a whole batch are dropped.
+            Defaults to False.
+        cropWidthHalf (bool, optional): If true, width is center cropped into half the width. Defaults to False.
+        shuffle (bool, optional): If true, dataset is shuffled. Defaults to True.
+        apply_flip (bool, optional): If true, randomly flip data sample. Defaults to False.
+        apply_scale (bool, optional): If true, randomly scale data sample. Defaults to False.
+        apply_shift (bool, optional): If true, randomly shift data sample. Defaults to False.
+        apply_rgb_blur (bool, optional): If true, randomly blur RGB sample. Defaults to False.
+        apply_depth_blur (bool, optional): If true, randomly blur depth sample. Defaults to False.
+
+    Returns:
+        tf.data.Dataset: Dataset.
+    """
     ds = prepare_streamed_dataset(
         True, True, datasetDirectory, img_height_width, NumberOfSamplesToRead, dtype, False, cropWidthHalf, shuffle
     )
@@ -416,23 +557,49 @@ def GetDatasetDepthDiffusionStreamed(
 
 
 def GetDatasetSuperresStreamed(
-    datasetDirectory,
-    batchSize,
-    low_res_height_width,
-    high_res_height_width,
-    condition_format,
-    diffusion_format,
-    NumberOfSamplesToRead=None,
-    dtype=np.dtype("float32"),
-    drop_remainder=False,
-    cropWidthHalf=False,
-    shuffle=True,
-    apply_flip=False,
-    apply_scale=False,
-    apply_shift=False,
-    apply_rgb_blur=False,
-    apply_depth_blur=False,
-):
+    datasetDirectory: str,
+    batchSize: int,
+    low_res_height_width: Tuple[int, int],
+    high_res_height_width: Tuple[int, int],
+    condition_format: str,
+    diffusion_format: str,
+    NumberOfSamplesToRead: Optional[int] = None,
+    dtype: Union[tf.DType, np.dtype] = np.dtype("float32"),
+    drop_remainder: bool = False,
+    cropWidthHalf: bool = False,
+    shuffle: bool = True,
+    apply_flip: bool = False,
+    apply_scale: bool = False,
+    apply_shift: bool = False,
+    apply_rgb_blur: bool = False,
+    apply_depth_blur: bool = False,
+) -> tf.data.Dataset:
+    """Get streamed dataset to train/test the depth super resolution diffusion model.
+
+    Args:
+        datasetDirectory (str): Path to directory containing dataset.
+        batchSize (int): Desired batch size of the dataset.
+        low_res_height_width (Tuple[int, int]): Resize low resolution input data to (height, width)
+        high_res_height_width (Tuple[int, int]): Resize high resolution input data to (height, width)
+        condition_format (str): Data format of the condition input: [ rgb | depth | rgbd ]
+        diffusion_format (str): Data format of the diffusion input: [ rgb | depth | rgbd ]
+        NumberOfSamplesToRead (Optional[int], optional): Number of data samples to read from the datasset.
+            Defaults to None.
+        dtype (Union[tf.DType, np.dtype], optional): dtype to which the data should be casted to.
+            Defaults to np.dtype("float32").
+        drop_remainder (bool, optional): If true, remaining samples that do not fill a whole batch are dropped.
+            Defaults to False.
+        cropWidthHalf (bool, optional): If true, width is center cropped into half the width. Defaults to False.
+        shuffle (bool, optional): If true, dataset is shuffled. Defaults to True.
+        apply_flip (bool, optional): If true, randomly flip data sample. Defaults to False.
+        apply_scale (bool, optional): If true, randomly scale data sample. Defaults to False.
+        apply_shift (bool, optional): If true, randomly shift data sample. Defaults to False.
+        apply_rgb_blur (bool, optional): If true, randomly blur RGB sample. Defaults to False.
+        apply_depth_blur (bool, optional): If true, randomly blur depth sample. Defaults to False.
+
+    Returns:
+        tf.data.Dataset: Dataset.
+    """
     read_rgbd = condition_format != diffusion_format or condition_format == "rgbd" or diffusion_format == "rgbd"
 
     # ds = prepare_streamed_dataset(condition_format in ["rgb","rgbd"], condition_format in ["depth","rgbd"], datasetDirectory,high_res_height_width,NumberOfSamplesToRead,dtype, condition_format =="rgbd",cropWidthHalf,shuffle)
@@ -469,13 +636,28 @@ def GetDatasetSuperresStreamed(
 
 
 def GetDatasetDepthDiffusionStreamedForSampling(
-    datasetDirectory,
-    batchSize,
-    img_height_width,
-    NumberOfSamplesToRead=None,
-    dtype=np.dtype("float32"),
-    cropWidthHalf=False,
-):
+    datasetDirectory: str,
+    batchSize: int,
+    img_height_width: Tuple[int, int],
+    NumberOfSamplesToRead: Optional[int] = None,
+    dtype: Union[tf.DType, np.dtype] = np.dtype("float32"),
+    cropWidthHalf: bool = False,
+) -> tf.data.Dataset:
+    """Get streamed dataset to sample from the depth diffusion model.
+
+    Args:
+        datasetDirectory (str): Path to directory containing dataset.
+        batchSize (int): Desired batch size of the dataset.
+        img_height_width (Tuple[int, int]): Resize data to (height, width)
+        NumberOfSamplesToRead (Optional[int], optional): Number of data samples to read from the datasset.
+            Defaults to None.
+        dtype (Union[tf.DType, np.dtype], optional): dtype to which the data should be casted to.
+            Defaults to np.dtype("float32").
+        cropWidthHalf (bool, optional): If true, width is center cropped into half the width. Defaults to False.
+
+    Returns:
+        tf.data.Dataset: Dataset
+    """
     ds = prepare_streamed_dataset(
         True,
         False,
@@ -492,14 +674,30 @@ def GetDatasetDepthDiffusionStreamedForSampling(
 
 
 def GetDatasetSuperresStreamedForSampling(
-    datasetDirectory,
-    batchSize,
-    low_res_height_width,
-    condition_format,
-    NumberOfSamplesToRead=None,
-    dtype=np.dtype("float32"),
-    cropWidthHalf=False,
-):
+    datasetDirectory: str,
+    batchSize: int,
+    low_res_height_width: Tuple[int, int],
+    condition_format: str,
+    NumberOfSamplesToRead: Optional[int] = None,
+    dtype: Union[tf.DType, np.dtype] = np.dtype("float32"),
+    cropWidthHalf: bool = False,
+) -> tf.data.Dataset:
+    """Get streamed dataset to sample from the depth super resolution diffusion model.
+
+    Args:
+        datasetDirectory (str): Path to directory containing dataset.
+        batchSize (int): Desired batch size of the dataset.
+        low_res_height_width (Tuple[int, int]): Resize low resolution input data to (height, width)
+        condition_format (str): Data format of the condition input: [ rgb | depth | rgbd ]
+        NumberOfSamplesToRead (Optional[int], optional): Number of data samples to read from the datasset.
+            Defaults to None.
+        dtype (Union[tf.DType, np.dtype], optional): dtype to which the data should be casted to.
+            Defaults to np.dtype("float32").
+        cropWidthHalf (bool, optional): If true, width is center cropped into half the width. Defaults to False.
+
+    Returns:
+        tf.data.Dataset: Dataset.
+    """
     ds = prepare_streamed_dataset(
         condition_format in ["rgb", "rgbd"],
         condition_format in ["depth", "rgbd"],

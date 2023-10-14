@@ -1,22 +1,28 @@
 import os
 import sys
 
-
 # Get the parent directory to be able to import the files located in imports
 current = os.path.dirname(os.path.realpath(__file__))
 parent = os.path.dirname(current)
 sys.path.append(parent)
 import logging
 import time
-
-import numpy as np
-import tensorflow as tf
-from scipy import signal
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Tuple
+from typing import Union
 
 import cv2
-import imports.callbacks as cdd_callbacks
-import imports.plotting as cdd_plotting
+import numpy as np
+import tensorflow as tf
+import tensorflow_addons as tfa
 import yaml
+from scipy import signal
+
+import imports.callbacks as cdd_callbacks
+import imports.model as cdd_model
+import imports.plotting as cdd_plotting
 
 
 class bcolors:
@@ -31,21 +37,43 @@ class bcolors:
     UNDERLINE = "\033[4m"
 
 
-def get_channels_from_format(format):
+def get_channels_from_format(format: str) -> int:
+    """Get number of channels required for a given `format`.
+
+    Args:
+        format (str): data format: [ rgb | depth | rgbd ]
+
+    Raises:
+        AttributeError: if `format` is not supported
+
+    Returns:
+        int: number of channels.
+    """
     if format == "rgb":
         return 3
-    elif format == "depth":
+    if format == "depth":
         return 1
-    elif format == "rgbd":
+    if format == "rgbd":
         return 4
-    else:
-        raise AttributeError(f"Format '{format}' is not supported.")
+    raise AttributeError(f"Format '{format}' is not supported.")
 
 
-def SaveDiffusedSamples(batchedSamples, outdir, dataFormat, fileNamePrefix=""):
-    """
-    param: batchedSamples: expected shape (batch, height, width, channel)
-    param: dataFormat: {rgb, depth, rgbd}
+def SaveDiffusedSamples(
+    batchedSamples: tf.Tensor,
+    outdir: str,
+    dataFormat: str,
+    fileNamePrefix: str = "",
+) -> None:
+    """Save data in appropiate file format.
+
+    Args:
+        batchedSamples (tf.Tensor): samples to be saved. Expected shape (batch, height, width, channel)
+        outdir (str): Directory where to save the output.
+        dataFormat (str): foramt of the data to be saved: [ rgb | depth | rgbd ]
+        fileNamePrefix (str, optional): Prefix for filename to differentiate different outputs. Defaults to "".
+
+    Raises:
+        ValueError: if `dataformat` is not supported.
     """
     logging.info(f"Saving {dataFormat} outputs to: {outdir}")
     if dataFormat == "rgb":
@@ -82,28 +110,44 @@ def SaveDiffusedSamples(batchedSamples, outdir, dataFormat, fileNamePrefix=""):
                 cv2.imwrite(f"{render_path}/{fileNamePrefix}_{i}.png", image)
                 cv2.imwrite(f"{depth_path}/{fileNamePrefix}_{i}.exr", depth, [cv2.IMWRITE_EXR_TYPE_FLOAT])
     else:
-        raise Exception(f"Dataformat '{dataFormat}' not supported.")
+        raise ValueError(f"Dataformat '{dataFormat}' not supported.")
 
-
-def train(
-    diffusionModel,
-    train_ds,
-    test_ds,
-    epochs,
-    ckpt_manager,
-    globalBatchsize,
-    epoch_offset=0,
-    testFrequency=5,
-    checkpointFrequency=20,
-    run_output_dir=".",
-    callbacks=None,
-    distributedTraining=False,
-):
     """
     :param epochs: number of epochs to train the model
     :param epoch_offset: offset to obtain actual epochs in case a checkpoint is restored
     """
 
+
+def train(
+    diffusionModel: cdd_model.DiffusionModel,
+    train_ds: tf.data.Dataset,
+    test_ds: tf.data.Dataset,
+    epochs: int,
+    ckpt_manager: tf.train.CheckpointManager,
+    globalBatchsize: int,
+    epoch_offset: int = 0,
+    testFrequency: int = 5,
+    checkpointFrequency: int = 20,
+    run_output_dir: str = ".",
+    callbacks: List[tf.keras.callbacks.Callback] = [],
+    distributedTraining: bool = False,
+) -> None:
+    """Training loop.
+
+    Args:
+        diffusionModel (cdd_model.DiffusionModel): Abstraction of the diffusion model.
+        train_ds (tf.data.Dataset): Training dataset.
+        test_ds (tf.data.Dataset): Testing dataset.
+        epochs (int): Number of epochs to train.
+        ckpt_manager (tf.train.CheckpointManager): Checkpoint manager instance.
+        globalBatchsize (int): Batch size considering all workers running in parallel in a data parallel setup.
+        epoch_offset (int, optional): Epoch to start with. Defaults to 0.
+        testFrequency (int, optional): Number of epochs to pass between test steps. Defaults to 5.
+        checkpointFrequency (int, optional): Number of epochs to pass between checkpoint creation. Defaults to 20.
+        run_output_dir (str, optional): Directory where results are saved. Defaults to ".".
+        callbacks (List[tf.keras.callbacks.Callback], optional): Callbacks to be triggered. Defaults to [].
+        distributedTraining (bool, optional): If true, distributed training is executed. Defaults to False.
+    """
     if distributedTraining:
         train_ds = diffusionModel.strategy.experimental_distribute_dataset(train_ds)
         test_ds = diffusionModel.strategy.experimental_distribute_dataset(test_ds)
@@ -147,7 +191,7 @@ def train(
         avg_train_loss = np.mean(train_losses).item()
 
         if train_num_batches == "???":
-            train_num_batches = len(train_losses)
+            train_num_batches = str(len(train_losses))
 
         total_time = round(time.time() - training_start_time, 3)
         print(
@@ -179,7 +223,7 @@ def train(
             avg_test_loss = np.mean(test_losses).item()
             # calculate training time
             if test_num_batches == "???":
-                test_num_batches = len(test_losses)
+                test_num_batches = str(len(test_losses))
             total_time = round(time.time() - training_start_time, 3)
             print(
                 bcolors.OKGREEN
@@ -200,7 +244,22 @@ def train(
         callback.on_train_end()
 
 
-def eval(diffusionModel, dataset, globalBatchsize, output_dir, distributedEval=False):
+def eval(
+    diffusionModel: cdd_model.DiffusionModel,
+    dataset: tf.data.Dataset,
+    globalBatchsize: int,
+    output_dir: str,
+    distributedEval: bool = False,
+) -> None:
+    """Evaluation loop.
+
+    Args:
+        diffusionModel (cdd_model.DiffusionModel): Abstraction of the diffusion model.
+        dataset (tf.data.Dataset): Dataset used for evaluation.
+        globalBatchsize (int): Batch size considering all workers running in parallel in a data parallel setup.
+        output_dir (str): Directory where results are saved.
+        distributedEval (bool, optional): If true, distributed evaluation is executed. Defaults to False.
+    """
     if distributedEval:
         dataset = diffusionModel.strategy.experimental_distribute_dataset(dataset)
         eval_step_func = diffusionModel.distributed_eval_step
@@ -271,23 +330,37 @@ def eval(diffusionModel, dataset, globalBatchsize, output_dir, distributedEval=F
 
 
 def sample(
-    diffusionModel,
-    dataset,
-    output_dir,
-    sampler,
-    sampling_steps,
-    diffusionFormat,
-    conditionFormat,
-    plot_output=False,
-    threshold=-0.9,
-):
-    assert sampler in ["ddpm", "ddim"]
+    diffusionModel: cdd_model.DiffusionModel,
+    dataset: tf.data.Dataset,
+    output_dir: str,
+    sampler: str,
+    sampling_steps: int,
+    diffusionFormat: str,
+    conditionFormat: str,
+    plot_output: bool = False,
+    threshold: float = -0.9,
+) -> None:
+    """Sample a diffusion model.
+
+    Args:
+        diffusionModel (cdd_model.DiffusionModel): Abstraction of the diffusion model.
+        dataset (tf.data.Dataset): Dataset containing condition inputs.
+        output_dir (str): Directory where results are saved
+        sampler (str): Sampling algorithm: [ ddpm | ddim ]
+        sampling_steps (int): Number of time steps used for sampling.
+        diffusionFormat (str): Data format of the diffusion input: [ rgb | depth | rgbd ]
+        conditionFormat (str): Data format of the condition input: [ rgb | depth | rgbd ]
+        plot_output (bool, optional): If true, outputs are plotted and saved. Defaults to False.
+        threshold (float, optional): Threshold for removing background pixel. Defaults to -0.9.
+
+    Raises:
+        ValueError: if `sampler` is not supported.
+    """
+    assert sampler in ["ddpm", "ddim"], f"Sampler '{sampler}' not supported."
     if sampler == "ddpm":
         sampler_func = diffusionModel.DDPMSampler
     elif sampler == "ddim":
         sampler_func = diffusionModel.DDIMSampler
-    else:
-        raise Exception
 
     if plot_output:
         file_path = os.path.join(output_dir, "plots")
@@ -342,7 +415,21 @@ def sample(
                     )
 
 
-def GetCallbacks(model, CONFIG, test_ds):
+def GetCallbacks(
+    model: cdd_model.DiffusionModel,
+    CONFIG: Dict[str, Any],
+    test_ds: tf.data.Dataset,
+) -> List[tf.keras.callbacks.Callback]:
+    """Get Callbacks based on `CONFIG`.
+
+    Args:
+        model (cdd_model.DiffusionModel): Abstraction of a diffusion model.
+        CONFIG (Dict[str, Any]): Configuration dictionary.
+        test_ds (tf.data.Dataset): Dataset used for testing.
+
+    Returns:
+        List[tf.keras.callbacks.Callback]: List containing callback instances.
+    """
     callbacks = []
 
     if True:
@@ -378,7 +465,27 @@ def GetCallbacks(model, CONFIG, test_ds):
     return callbacks
 
 
-def calc_depth_metrics(depth_gt, depth_pred, threshold=-0.9):
+def calc_depth_metrics(
+    depth_gt: tf.Tensor,
+    depth_pred: tf.Tensor,
+    threshold: float = -0.9,
+) -> Dict[str, float]:
+    """Calculate metrics for generated depth maps.
+
+    Metrics are:
+    * IoU: intersection over union.
+    * dice: Dice score.
+    * mae: Mean average error.
+    * mse: Mean square error.
+
+    Args:
+        depth_gt (tf.Tensor): Ground truth depth map.
+        depth_pred (tf.Tensor): Predicted depth map.
+        threshold (float, optional): Threshold for removing background pixel. Defaults to -0.9.
+
+    Returns:
+        Dict[str, float]: Dictionary containing the metrics. Keys are: `iou`, `dice`, `mae` and `mse`
+    """
     metrics = {}
     mask_gt = tf.squeeze(tf.where(depth_gt > threshold, 1, 0), axis=-1)
     mask_pred = tf.squeeze(tf.where(depth_pred > threshold, 1, 0), axis=-1)
@@ -408,7 +515,21 @@ def calc_depth_metrics(depth_gt, depth_pred, threshold=-0.9):
     return metrics
 
 
-def get_shift(depth_gt, depth_pred, threshold=-0.9):
+def get_shift(
+    depth_gt: Union[tf.Tensor, np.ndarray],
+    depth_pred: Union[tf.Tensor, np.ndarray],
+    threshold: float = -0.9,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Estimate the shift in x,y between two depth maps using 2D correlation.
+
+    Args:
+        depth_gt (Union[tf.Tensor, np.ndarray]): Ground truth depth map.
+        depth_pred (Union[tf.Tensor, np.ndarray]): Predicted depth map.
+        threshold (float, optional): Threshold for removing background pixel. Defaults to -0.9.
+
+    Returns:
+        Tuple[tf.Tensor, tf.Tensor, tf.Tensor]: Estimated translation in `y` and `x` and the `shifted_depth_map`.
+    """
     depth_pred = tf.convert_to_tensor(depth_pred)  # enforce to be tf tensor. input might be numpy array
     batch, height, width, channel = tf.shape(depth_pred)
     mask_gt = tf.squeeze(tf.where(depth_gt > threshold, 1, 0), axis=-1)
@@ -432,3 +553,32 @@ def get_shift(depth_gt, depth_pred, threshold=-0.9):
     y = tf.cast(y, dtype=tf.float32)
     x = tf.cast(x, dtype=tf.float32)
     return y, x, shifted_depth_pred
+
+
+def get_optimizer(optimizer: str, learning_rate: float, weight_decay: float = 0.0) -> tf.keras.optimizers.Optimizer:
+    """Get optimizer instance.
+
+    Args:
+        optimizer (str): String describing the optimizer: [ adam | adamW | sgd | sgdW | yogi ]
+        learning_rate (float): Learning rate for the optimization step.
+        weight_decay (float, optional): _description_. Defaults to 0.0.
+
+    Raises:
+        ValueError: if `optimizer` is not supported.
+
+    Returns:
+        tf.keras.optimizers.Optimizer: An optimizer instance.
+    """
+    if optimizer == "adam":
+        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    elif optimizer == "adamW":
+        optimizer = tfa.optimizers.AdamW(weight_decay=weight_decay, learning_rate=learning_rate)
+    elif optimizer == "sgd":
+        optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9)
+    elif optimizer == "sgdW":
+        optimizer = tfa.optimizers.SGDW(weight_decay=weight_decay, learning_rate=learning_rate, momentum=0.9)
+    elif optimizer == "yogi":
+        optimizer = tfa.optimizers.Yogi(learning_rate=learning_rate)
+    else:
+        raise ValueError(f"Undefined optimizer provided: {optimizer}")
+    return optimizer

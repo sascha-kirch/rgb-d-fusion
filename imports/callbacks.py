@@ -1,7 +1,7 @@
 import logging
 import os
 import sys
-
+from typing import Optional
 
 # Get the parent directory to be able to import the files located in imports
 current = os.path.dirname(os.path.realpath(__file__))
@@ -10,18 +10,74 @@ sys.path.append(parent)
 
 import numpy as np
 import tensorflow as tf
+import yaml
 
 import imports.helper as cdd_helper
 import imports.plotting as cdd_plotting
-import yaml
+from imports.model import DiffusionModel
 
 
-class ModelInfoCallback(tf.keras.callbacks.Callback):
-    def __init__(self, model, logDir):
+class CddCallback(tf.keras.callbacks.Callback):
+    """Base class for callbacks. Methods might be overriden, but is not mandatory as in abstract classes.
+
+    Inherits from:
+        tf.keras.callbacks.Callback
+    """
+
+    def on_train_begin(self, logs: Optional[str] = None) -> None:
+        """Event triggered on the beggining of the training.
+
+        Args:
+            logs (Optional[str], optional): Extra information that can be provided to the event. Defaults to None.
+        """
+        pass
+
+    def on_train_step_begin(self, epoch: int, logs: Optional[str] = None) -> None:
+        """Event triggered at the beginning of the current training step of a given epoch.
+
+        Args:
+            epoch (int): Current epoch in which event is triggered.
+            logs (Optional[str], optional): Extra information that can be provided to the event. Defaults to None.
+        """
+        pass
+
+    def on_train_step_end(self, epoch: int, logs: Optional[str] = None) -> None:
+        """Event triggered at the end of the current training step of a given epoch.
+
+        Args:
+            epoch (int): Current epoch in which event is triggered.
+            logs (Optional[str], optional): Extra information that can be provided to the event. Defaults to None.
+        """
+        pass
+
+
+class ModelInfoCallback(CddCallback):
+    """Callback to save the model summary in text form and save the model graph as image.
+
+    Event triggered at the beginning of the training before the first training step.
+
+    Inherits from:
+        CddCallback
+    """
+
+    def __init__(self, model: DiffusionModel, logDir: str) -> None:
+        """Callback to save the model summary in text form and save the model graph as image.
+
+        Args:
+            model (DiffusionModel): Abstraction of a diffsuion model for which the info shall be saved.
+            logDir (str): Directory to which the logs are saved.
+        """
         self.model = model
         self.logDir = logDir
 
-    def on_train_begin(self, logs=None):
+    def on_train_begin(self, logs: Optional[str] = None) -> None:
+        """Event to save the model summary in text form and save the model graph as image.
+
+        Event triggered at the beginning of the training before the first training step.
+
+        Args:
+            logs (Optional[str], optional): Extra information that can be provided to the event. Defaults to None.
+        """
         fileName = os.path.join(self.logDir, "illustrations", "model.png")
         self.model.model.PlotGraph(fileName)
 
@@ -29,27 +85,41 @@ class ModelInfoCallback(tf.keras.callbacks.Callback):
         with open(os.path.join(self.logDir, "model_summary.txt"), "w") as fh:
             self.model.model.summary(print_fn=lambda x: fh.write(x + "\n"), line_length=100, expand_nested=True)
 
-    # REQUIRED in order for tracing and graping to work only for the test data, since parent does not implements this!
-    def on_train_step_begin(self, epoch, logs=None):
-        pass
 
-    def on_train_step_end(self, epoch, logs=None):
-        pass
+class SampleModelCallback(CddCallback):
+    """Callback to sample from the diffusion model, calculate metrics and save plots for evaluation.
 
+    Event triggered after at the end of training step and if the current epoch matches the frequency constraint.
 
-class SampleModelCallback(tf.keras.callbacks.Callback):
+    Inherits from:
+        CddCallback
+    """
+
     def __init__(
         self,
-        model,
-        sampling_steps,
-        sampleFrequency,
-        epochs,
-        scope,
-        condition_format,
-        diffusion_format,
-        dataset,
-        run_output_dir,
-    ):
+        model: DiffusionModel,
+        sampling_steps: int,
+        sampleFrequency: int,
+        epochs: int,
+        scope: str,
+        condition_format: str,
+        diffusion_format: str,
+        dataset: tf.data.Dataset,
+        run_output_dir: str,
+    ) -> None:
+        """Callback to sample from the diffusion model, calculate metrics and save plots for evaluation.
+
+        Args:
+            model (DiffusionModel): Abstraction of a diffsuion model from which shall be sampled.
+            sampling_steps (int): Number of steps in the reverse diffusion process.
+            sampleFrequency (int): Number of epochs that should pass before sampling the model.
+            epochs (int): Total number of epochs the model is trained.
+            scope (str): [ depth_diffusion | super_resolution]
+            condition_format (str): Fformat of the condition input of the super resolution model. [rgb | depth | rgbd].
+            diffusion_format (str): Format of the diffusion input of the super resolution model. [rgb | depth | rgbd].
+            dataset (tf.data.Dataset): Dataset used for sampling.
+            run_output_dir (str): Directory where the output metrics and samples are saved to
+        """
         self.model = model
         self.sampling_steps = sampling_steps
         self.sampleFrequency = sampleFrequency
@@ -60,14 +130,15 @@ class SampleModelCallback(tf.keras.callbacks.Callback):
         self.diffusion_format = diffusion_format
         self.run_output_dir = run_output_dir
 
-    def on_train_begin(self, logs=None):
-        pass
+    def on_train_step_end(self, epoch: int, logs: Optional[str] = None) -> None:
+        """Event to sample from the diffusion model, calculate metrics and save plots for evaluation.
 
-    # REQUIRED in order for tracing and graping to work only for the test data, since parent does not implements this!
-    def on_train_step_begin(self, epoch, logs=None):
-        pass
+        Event triggered after at the end of training step and if the current epoch matches the frequency constraint.
 
-    def on_train_step_end(self, epoch, logs=None):
+        Args:
+            epoch (int): Current epoch when event is triggered
+            logs (Optional[str], optional): Extra information that can be provided to the event. Defaults to None.
+        """
         try:
             if self.sampleFrequency and (epoch % self.sampleFrequency == 0) or epoch == self.epochs:
                 (
@@ -126,16 +197,42 @@ class SampleModelCallback(tf.keras.callbacks.Callback):
             logging.warning(type(e))
             logging.warning(e.args)
             logging.warning(e)
-
             logging.warning("Exception during sampling. Continue with training.")
 
 
-class LearningRateCallback(tf.keras.callbacks.Callback):
-    """
-    A callback to change the learning rate of the optimizers.
+class LearningRateCallback(CddCallback):
+    """Callback to schedule the learning rate. Executed on the beginning of a training step.
+
+    Inherits from:
+        CddCallback
     """
 
-    def __init__(self, learning_rate, model, logDir, warmup_epochs, epochs, weight_decay=None, lr_decay=None):
+    def __init__(
+        self,
+        learning_rate: float,
+        model: DiffusionModel,
+        logDir: str,
+        warmup_epochs: int,
+        epochs: int,
+        weight_decay: Optional[float] = None,
+        lr_decay: Optional[str] = None,
+    ) -> None:
+        """Callback to schedule the learning rate. Executed on the beginning of a training step.
+
+        Args:
+            learning_rate (float): Target learning rate from which the schedule starts after an optional warmup.
+            model (DiffusionModel): Abstraction of a diffsuion model that grants access to the optimizer state.
+            logDir (str): Directory where the learning rate is logged for each epoch
+            warmup_epochs (int): Number of epochs the learning rate is linearly increased
+            epochs (int): Number of epochs the model is trained.
+            weight_decay (Optional[float], optional): Target wheight decay value that needs to be scheduled along the
+                learning rate. Defaults to None.
+            lr_decay (Optional[str], optional): Learning rate schedule. Options are
+                ['linear'|'cosine'|'cosine_restart'|'step'|'exponential']. Defaults to None.
+
+        Raises:
+            ValueError: Unsuported value for lr_decay.
+        """
         self.learning_rate = learning_rate
         self.model = model
         self.logDir = logDir
@@ -143,10 +240,8 @@ class LearningRateCallback(tf.keras.callbacks.Callback):
         self.weight_decay = weight_decay
         self.lr_decay = lr_decay
         self.epochs = epochs
-        self.decayFunc = None
-        if lr_decay == None:
-            self.decayFunc = self.NoDecay
-        elif lr_decay == "linear":
+        self.decayFunc = self.NoDecay
+        if lr_decay == "linear":
             self.decayFunc = self.LinearDecay
         elif lr_decay == "cosine":
             self.decayFunc = self.CosineDecay
@@ -157,68 +252,147 @@ class LearningRateCallback(tf.keras.callbacks.Callback):
         elif lr_decay == "exponential":
             self.decayFunc = self.ExponentialDecay
         else:
-            raise Exception(f"provided lr_decay: '{lr_decay}' is not defined")
+            raise ValueError(f"provided lr_decay: '{lr_decay}' is not defined")
 
-    def LinearWarmUp(self, target_lr, warmup_epochs, currentEpoch):
+    def LinearWarmUp(self, target_lr: float, warmup_epochs: int, currentEpoch: int) -> float:
+        """Linear warmup schedule of the learning rate.
+
+        Args:
+            target_lr (float): Target learning rate from which the schedule starts.
+            warmup_epochs (int): Number of epochs to linearly increase the learning rate from 0 to taget_lr.
+            currentEpoch (int): Current epoch of the training process.
+
+        Returns:
+            float: Learning rate for the current epoch following the schedule.
+        """
         return (currentEpoch + 1) * (target_lr / (warmup_epochs + 1))
 
-    def LinearDecay(self, currentEpoch, warmup_epochs, total_epochs, target_lr):
+    def LinearDecay(self, currentEpoch: int, warmup_epochs: int, total_epochs: int, target_lr: float) -> float:
+        """Learning rate schedule with linearly decreasing learning rate after optional linear warmup.
+
+        Args:
+            currentEpoch (int): Current epoch of the training process.
+            warmup_epochs (int): Number of epochs to linearly increase the learning rate from 0 to taget_lr.
+            total_epochs (int): Total number of epochs for the training.
+            target_lr (float): Target learning rate from which the schedule starts.
+
+        Returns:
+            float: Learning rate for the current epoch following the schedule.
+        """
         if currentEpoch < warmup_epochs:
             return self.LinearWarmUp(target_lr, warmup_epochs, currentEpoch)
-        else:
-            return -(currentEpoch - warmup_epochs) * (target_lr / (total_epochs - (warmup_epochs))) + target_lr
+        return -(currentEpoch - warmup_epochs) * (target_lr / (total_epochs - (warmup_epochs))) + target_lr
 
-    def ExponentialDecay(self, currentEpoch, warmup_epochs, total_epochs, target_lr):
+    def ExponentialDecay(self, currentEpoch: int, warmup_epochs: int, total_epochs: int, target_lr: float) -> float:
+        """Learning rate schedule with exponential decay aftter optional linear warmup.
+
+        Args:
+            currentEpoch (int): Current epoch of the training process.
+            warmup_epochs (int): Number of epochs to linearly increase the learning rate from 0 to taget_lr.
+            total_epochs (int): Total number of epochs for the training.
+            target_lr (float): Target learning rate from which the schedule starts.
+
+        Returns:
+            float: Learning rate for the current epoch following the schedule.
+        """
         if currentEpoch < warmup_epochs:
             return self.LinearWarmUp(target_lr, warmup_epochs, currentEpoch)
-        else:
-            k = 2 * np.pi / (total_epochs - warmup_epochs)
-            return target_lr * np.exp(-k * (currentEpoch + 1 - (warmup_epochs + 1)))
+        k = 2 * np.pi / (total_epochs - warmup_epochs)
+        return target_lr * np.exp(-k * (currentEpoch + 1 - (warmup_epochs + 1)))
 
-    def StepDecay(self, currentEpoch, warmup_epochs, total_epochs, target_lr):
+    def StepDecay(self, currentEpoch: int, warmup_epochs: int, total_epochs: int, target_lr: float) -> float:
+        """Learning rate schedule where amplitude is halved 4 times after optional linear warmup.
+
+        Args:
+            currentEpoch (int): Current epoch of the training process.
+            warmup_epochs (int): Number of epochs to linearly increase the learning rate from 0 to taget_lr.
+            total_epochs (int): Total number of epochs for the training.
+            target_lr (float): Target learning rate from which the schedule starts.
+
+        Returns:
+            float: Learning rate for the current epoch following the schedule.
+        """
         if currentEpoch < warmup_epochs:
             return self.LinearWarmUp(target_lr, warmup_epochs, currentEpoch)
-        else:
-            quarter = (total_epochs - warmup_epochs) // 4
-            if currentEpoch < (warmup_epochs + quarter):
-                return target_lr
-            elif currentEpoch < (warmup_epochs + 2 * quarter):
-                return 0.5 * target_lr
-            elif currentEpoch < (warmup_epochs + 3 * quarter):
-                return 0.25 * target_lr
-            else:
-                return 0.125 * target_lr
+        quarter = (total_epochs - warmup_epochs) // 4
+        if currentEpoch < (warmup_epochs + quarter):
+            return target_lr
+        if currentEpoch < (warmup_epochs + 2 * quarter):
+            return 0.5 * target_lr
+        if currentEpoch < (warmup_epochs + 3 * quarter):
+            return 0.25 * target_lr
+        return 0.125 * target_lr
 
-    def CosineRestartDecay(self, currentEpoch, warmup_epochs, total_epochs, target_lr):
+    def CosineRestartDecay(self, currentEpoch: int, warmup_epochs: int, total_epochs: int, target_lr: float) -> float:
+        """Cosine shaped learning rate decay with one restart and optional linear warmup.
+
+        Learning rate schedule following a cosine decay that is restarted after it reaches 0 after half the schedule.
+        The amplitude after the restart is target_lr/2. Optional linear warmup.
+
+        Args:
+            currentEpoch (int): Current epoch of the training process.
+            warmup_epochs (int): Number of epochs to linearly increase the learning rate from 0 to taget_lr.
+            total_epochs (int): Total number of epochs for the training.
+            target_lr (float): Target learning rate from which the schedule starts.
+
+        Returns:
+            float: Learning rate for the current epoch following the schedule.
+        """
         half = ((total_epochs - warmup_epochs) // 2) + 1
         if currentEpoch < warmup_epochs:
             return self.LinearWarmUp(target_lr, warmup_epochs, currentEpoch)
-        else:
-            if currentEpoch < (warmup_epochs + half):
-                return self.CosineDecay(currentEpoch - warmup_epochs, 0, half, target_lr)
-            else:
-                return self.CosineDecay(currentEpoch - warmup_epochs - half, 0, half, 0.5 * target_lr)
 
-    def CosineDecay(self, currentEpoch, warmup_epochs, total_epochs, target_lr):
+        if currentEpoch < (warmup_epochs + half):
+            return self.CosineDecay(currentEpoch - warmup_epochs, 0, half, target_lr)
+
+        return self.CosineDecay(currentEpoch - warmup_epochs - half, 0, half, 0.5 * target_lr)
+
+    def CosineDecay(self, currentEpoch: int, warmup_epochs: int, total_epochs: int, target_lr: float) -> float:
+        """Cosine shaped learning rate decay with optional linear warmup.
+
+        Learning rate schedule following a cosine decay. After an optional warmup, the learning reate is decreased from
+        target_lr to 0 following a cosine function.
+
+        Args:
+            currentEpoch (int): Current epoch of the training process.
+            warmup_epochs (int): Number of epochs to linearly increase the learning rate from 0 to taget_lr.
+            total_epochs (int): Total number of epochs for the training.
+            target_lr (float): Target learning rate from which the schedule starts.
+
+        Returns:
+            float: Learning rate for the current epoch following the schedule.
+        """
         if currentEpoch < warmup_epochs:
             return self.LinearWarmUp(target_lr, warmup_epochs, currentEpoch)
-        else:
-            return (target_lr / 2) * np.cos(
-                (np.pi / (total_epochs - warmup_epochs)) * (currentEpoch - warmup_epochs)
-            ) + (target_lr / 2)
+        return (target_lr / 2) * np.cos((np.pi / (total_epochs - warmup_epochs)) * (currentEpoch - warmup_epochs)) + (
+            target_lr / 2
+        )
 
-    def NoDecay(self, currentEpoch, warmup_epochs, total_epochs, target_lr):
+    def NoDecay(self, currentEpoch: int, warmup_epochs: int, total_epochs: int, target_lr: float) -> float:
+        """Schedule with constant learning rate and no decay. Optionaly a linear warmup can be scheduled.
+
+        Args:
+            currentEpoch (int): Current epoch of the training process.
+            warmup_epochs (int): Number of epochs to linearly increase the learning rate from 0 to taget_lr.
+            total_epochs (int): Total number of epochs for the training.
+            target_lr (float): Target learning rate which is used after the linear warmup.
+
+        Returns:
+            float: Learning rate for the current epoch following the schedule.
+        """
         if currentEpoch < warmup_epochs:
             return self.LinearWarmUp(target_lr, warmup_epochs, currentEpoch)
-        else:
-            return target_lr
+        return target_lr
 
-    def on_train_step_begin(self, epoch, logs=None):
+    def on_train_step_begin(self, epoch: int, logs: Optional[str] = None) -> None:
+        """Event to update the learning rate following the configured schedule.
+
+        Args:
+            epoch (int): Current epoch when event is triggered.
+            logs (Optional[str], optional): Extra information that can be provided to the event. Defaults to None.
+        """
         self.model.optimizer.learning_rate = self.decayFunc(epoch, self.warmup_epochs, self.epochs, self.learning_rate)
         if self.weight_decay:
             self.model.optimizer.weight_decay = self.decayFunc(
                 epoch, self.warmup_epochs, self.epochs, self.weight_decay
             )
-
-    def on_train_step_end(self, epoch, logs=None):
-        pass

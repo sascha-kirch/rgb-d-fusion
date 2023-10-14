@@ -6,16 +6,21 @@ from functools import partial
 
 import numpy as np
 import tensorflow as tf
-from tqdm import tqdm
-
 import tensorflow_addons as tfa
 from einops import rearrange
-
+from tqdm import tqdm
 
 # Get the parent directory to be able to import the files located in imports
 current = os.path.dirname(os.path.realpath(__file__))
 parent = os.path.dirname(current)
 sys.path.append(parent)
+
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Tuple
+from typing import Union
 
 import imports.diffusion as cdd_diffusion
 import imports.helper as cdd_helper
@@ -23,7 +28,7 @@ import imports.losses as cdd_losses
 
 
 # helpers functions
-def exists(x):
+def _exists(x: Optional[Any]) -> bool:
     return x is not None
 
 
@@ -32,14 +37,26 @@ MyConv2D = partial(tf.keras.layers.Conv2D, padding="SAME", use_bias=False, kerne
 MyDense = partial(tf.keras.layers.Dense, use_bias=True, kernel_initializer="glorot_uniform")
 
 
-# We will use this to convert timestamps to time encodings
 class SinusoidalPosEmb(tf.keras.layers.Layer):
-    def __init__(self, dim, max_positions=10000, **kwargs):
+    """Create a sinusodial positional embedding tensor.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(self, dim: int, max_positions: int = 10000, **kwargs: Any) -> None:
+        """Create a sinusodial positional embedding tensor.
+
+        Args:
+            dim (int): Dimension of the embedding vector.
+            max_positions (int, optional): Maximal positions of the embedding. Defaults to 10000.
+            kwargs (Any): Additional key word arguments passed to the base class.
+        """
         super(SinusoidalPosEmb, self).__init__(**kwargs)
         self.dim = dim
         self.max_positions = max_positions
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         x = tf.cast(x, tf.float32)
         half_dim = self.dim // 2
         emb = math.log(self.max_positions) / (half_dim - 1)
@@ -47,7 +64,8 @@ class SinusoidalPosEmb(tf.keras.layers.Layer):
         emb = x[:, None] * emb[None, :]
         return tf.concat([tf.sin(emb), tf.cos(emb)], axis=-1)
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(SinusoidalPosEmb, self).get_config()
         config.update(
             {
@@ -59,37 +77,65 @@ class SinusoidalPosEmb(tf.keras.layers.Layer):
 
 
 class Identity(tf.keras.layers.Layer):
-    """Layer that passes the input through without performing any operation."""
+    """Layer that passes the input through without performing any operation.
 
-    def call(self, x, **kwargs):
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h, w, c]."""
         return x
 
 
 class Residual(tf.keras.layers.Layer):
-    def __init__(self, layer, **kwargs):
-        """Adds a residual connection to a layer.
-        ``out = layer(in) + in``
+    """Add a residual connection to a given layer connectiong its input and output.
 
-          Args:
-              * layer: A tensorflow layer to which the residual connection shall be applied to.
+    out = layer(in) + in
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(self, layer: tf.keras.layers.Layer, **kwargs: Any) -> None:
+        """Add a residual connection to a given `layer` connectiong its input and output.
+
+        Args:
+            layer (tf.keras.layers.Layer): Layer to which the residual connection shall be applied to.
+            kwargs (Any): Additional key word arguments passed to the base class.
         """
         super(Residual, self).__init__(**kwargs)
         self.layer = layer
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h, w, c]."""
         return self.layer(x, **kwargs) + x
 
 
 class UpSample(tf.keras.layers.Layer):
-    def __init__(self, size=(2, 2), filters=None, useConv=False, interpolation="nearest", **kwargs):
-        """Upsampling layer with configurable size and interpolation method. Optionally a convolution can
-        be applied to change not only the spatial width but also the number of channels.
+    """Upsampling layer for 2D feature maps with configurable size and interpolation method.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(
+        self,
+        size: Tuple[int, int] = (2, 2),
+        filters: Optional[int] = None,
+        useConv: bool = False,
+        interpolation: str = "nearest",
+        **kwargs: Any,
+    ) -> None:
+        """Upsampling layer for 2D feature maps with configurable size and interpolation method.
 
         Args:
-            * size: (size_h, size_w) horizontal and vertical size of the interpolation window.
-            * filters: number of filters for the optional convolution. Defaults to None.
-            * useConv: Wheather or not to apply a convolution at the end. Defaults to False.
-            * interpolation: Interpolation method. Defaults to "nearest".
+            size (Tuple[int, int], optional): Horizontal and vertical size of the interpolation window used for
+                upsampling. Defaults to (2, 2).
+            filters (Optional[int], optional): Number of channels in the resulting feature map. Defaults to None.
+            useConv (bool, optional): If true, aplies conv layer after upsampling. Defaults to False.
+            interpolation (str, optional): Interpolation method used for upsampling. Defaults to "nearest".
+            kwargs (Any): Additional key word arguments passed to the base class.
         """
         super(UpSample, self).__init__(**kwargs)
         self.size = size
@@ -100,33 +146,44 @@ class UpSample(tf.keras.layers.Layer):
         if useConv:
             self.conv = MyConv2D(filters=filters, kernel_size=3)
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h*size, w*size, filters]."""
         x = self.up(x)
         if self.useConv:
             x = self.conv(x)
         return x
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(UpSample, self).get_config()
         config.update({"size": self.size, "useConv": self.useConv, "interpolation": self.interpolation})
         return config
 
 
 class SuperResUpSample(tf.keras.layers.Layer):
-    def __init__(self, size, **kwargs):
-        """Downsampling layer that either uses a convolution of stride 2 or an AveragePooling2D layer.
+    """Initial Upsampling layer for the condition input of the super resolution model.
+
+    Applies different upsampling interpolation mothed depending on the data format beeing RGB or depth.
+    - RGB: Bilinear interpolation
+    - Depth: nearest neighbor interpolation.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(self, size: Tuple[int, int], **kwargs: Any) -> None:
+        """Initial Upsampling layer for the condition input of the super resolution model.
 
         Args:
-            * pool_size (optional): _description_. Defaults to (2,2).
-            * downsampling (optional): _description_. Defaults to 'average'.
+            size (Tuple[int, int]): orizontal and vertical size of the interpolation window used for
+                upsampling.
+            kwargs (Any): Additional key word arguments passed to the base class.
         """
         super(SuperResUpSample, self).__init__(**kwargs)
         self.size = size
 
-    def build(self, inputShape):
+    def build(self, inputShape: Tuple[int, ...]) -> None:
         channels = inputShape[-1]  # 4: rgbd, 3: rgb , 1:depth
-        self.up_rgb = None
-        self.up_depth = None
         if channels == 4:
             self.data_format = "rgbd"
             self.up_rgb = tf.keras.layers.UpSampling2D(size=self.size, interpolation="bilinear")
@@ -141,7 +198,8 @@ class SuperResUpSample(tf.keras.layers.Layer):
         else:
             raise ValueError
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h*size, w*size, c]."""
         if self.data_format == "rgbd":
             renders, depths = tf.split(x, [3, 1], axis=-1)
             renders = self.up_rgb(renders)
@@ -153,26 +211,41 @@ class SuperResUpSample(tf.keras.layers.Layer):
             x = self.up_depth(x)
         return x
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(SuperResUpSample, self).get_config()
         config.update({"size": self.size})
         return config
 
 
 class DownSample(tf.keras.layers.Layer):
-    def __init__(self, pool_size=(2, 2), downsampling="average", **kwargs):
-        """Downsampling layer that either uses a convolution of stride 2 or an AveragePooling2D layer.
+    """Downsample a 2D feature map.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(
+        self,
+        pool_size: Tuple[int, int] = (2, 2),
+        downsampling: str = "average",
+        **kwargs: Any,
+    ) -> None:
+        """Downsample a 2D feature map.
 
         Args:
-            * pool_size (optional): _description_. Defaults to (2,2).
-            * downsampling (optional): _description_. Defaults to 'average'.
+            pool_size (Tuple[int, int], optional): poolsize for the MaxPool2D opperation to shrink the spatial width.
+                Defaults to (2, 2).
+            downsampling (str, optional): Down sample operation: [ average |  conv | max | learned_pooling ].
+                Defaults to "average".
+            kwargs (Any): Additional key word arguments passed to the base class.
         """
         super(DownSample, self).__init__(**kwargs)
         assert downsampling in ["average", "conv", "max", "learned_pooling"]
         self.downsampling = downsampling
         self.pool_size = pool_size
 
-    def build(self, inputShape):
+    def build(self, inputShape: Tuple[int, ...]) -> None:
         if self.downsampling == "conv":
             self.down = MyConv2D(filters=inputShape[-1], kernel_size=3, strides=2)
         elif self.downsampling == "average":
@@ -182,58 +255,75 @@ class DownSample(tf.keras.layers.Layer):
         else:
             raise Exception
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h/pool_size, w/pool_size, filters]."""
         return self.down(x)
 
-    def get_config(self):
-        config = super(UpSample, self).get_config()
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
+        config = super(DownSample, self).get_config()
         config.update({"pool_size": self.pool_size, "downsampling": self.downsampling})
         return config
 
 
 class PreNorm(tf.keras.layers.Layer):
-    def __init__(self, layer, **kwargs):
-        """Applies LayerNormalization before calling a provided layer.
+    """Places Layer normalization layer before a given `layer`.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(self, layer: tf.keras.layers.Layer, **kwargs: Any) -> None:
+        """Places Layer normalization layer before a given `layer`.
 
         Args:
-            * layer: Layer which should be executed after the LayerNormalization
+            layer (tf.keras.layers.Layer): Layer placed after the layer-normalization.
+            kwargs (Any): Additional key word arguments passed to the base class.
         """
         super(PreNorm, self).__init__(**kwargs)
         self.layer = layer
         self.norm = tf.keras.layers.LayerNormalization()
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h, w, c]."""
         x = self.norm(x, **kwargs)
         return self.layer(x, **kwargs)
 
 
 # building block modules
 class Block(tf.keras.layers.Layer):
+    """Building block using a convolution, normalization, activation, opt. dropout and opt. up or down sampling.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
     def __init__(
         self,
-        outChannels,
-        gn_group_size=8,
-        dropoutRate=0.0,
-        strides=1,
-        kernel_size=3,
-        up=False,
-        down=False,
-        downsampling="average",
-        **kwargs,
-    ):
-        """Basic building block containing normalization, activation, optional dropout and a convolution.
+        outChannels: int,
+        gn_group_size: int = 8,
+        dropoutRate: float = 0.0,
+        strides: int = 1,
+        kernel_size: int = 3,
+        up: bool = False,
+        down: bool = False,
+        downsampling: str = "average",
+        **kwargs: Any,
+    ) -> None:
+        """Building block using a convolution, normalization, activation, opt. dropout and opt. up or down sampling.
+
         Optionally encoorperates a time_embedding provided as gamma_beta using AdaGN (Adaptive Group Norm)
 
         Args:
-            * outChannels: Number of Channels in the resulting output feature map
-            * gn_group_size: Groupsize for GroupNorm layer. Defaults to 32.
-            * dropoutRate: Dropout rate for SpatialDropout operation. Defaults to 0.0.
-            * strides: Strides of the convolution kernel. Defaults to 1.
-            * kernel_size: Kernelsize of the convolution. Defaults to 3.
-            * up: If true, adds spatial upsampling layer. Defaults to False.
-            * down: If true, adds spatial downsampling layer. Defaults to False.
-            * downsampling: Downsampling method to use Defaults to 'average'.
-
+            outChannels (int): Number of Channels in the resulting output feature map
+            gn_group_size (int, optional): Groupsize for GroupNorm layer. Defaults to 8.
+            dropoutRate (float, optional): Dropout rate for Dropout layer. Defaults to 0.0.
+            strides (int, optional): Strides of the convolution kernel. Defaults to 1.
+            kernel_size (int, optional): Kernel size of the convolution. Defaults to 3.
+            up (bool, optional): If true, adds spatial upsampling layer. Defaults to False.
+            down (bool, optional): If true, adds spatial downsampling layer. Defaults to False.
+            downsampling (str, optional): Downsampling method to use. Defaults to 'average'.
+            kwargs (Any): Additional key word arguments passed to the base class.
         """
         super(Block, self).__init__(**kwargs)
         self.outChannels = outChannels
@@ -257,10 +347,10 @@ class Block(tf.keras.layers.Layer):
         self.act = tf.keras.layers.Activation(tf.keras.activations.gelu)
         self.dropout = tf.keras.layers.Dropout(dropoutRate)
 
-    def call(self, x, gamma_beta=None, **kwargs):
+    def call(self, x: tf.Tensor, gamma_beta: Optional[tf.Tensor] = None, **kwargs: Any) -> tf.Tensor:
         x = self.conv(x)
         x = self.norm(x, **kwargs)
-        if exists(gamma_beta):
+        if _exists(gamma_beta):
             gamma, beta = gamma_beta
             x = x * (gamma + 1) + beta
 
@@ -268,7 +358,8 @@ class Block(tf.keras.layers.Layer):
         x = self.dropout(x, **kwargs)
         return self.updown(x)
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(Block, self).get_config()
         config.update(
             {
@@ -285,18 +376,38 @@ class Block(tf.keras.layers.Layer):
 
 
 class ResnetBlock(tf.keras.layers.Layer):
+    """ResNet like building block that also inputs time embeddings with optional up/down sampling.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
     def __init__(
         self,
-        outChannels,
-        time_emb_dim=None,
-        gn_group_size=8,
-        dropoutRate=0.0,
-        up=False,
-        down=False,
-        dropResBlockRate=0.0,
-        downsampling="average",
-        **kwargs,
-    ):
+        outChannels: int,
+        time_emb_dim: Optional[int] = None,
+        gn_group_size: int = 8,
+        dropoutRate: float = 0.0,
+        up: bool = False,
+        down: bool = False,
+        dropResBlockRate: float = 0.0,
+        downsampling: str = "average",
+        **kwargs: Any,
+    ) -> None:
+        """ResNet like building block that also inputs time embeddings with optional up/down sampling.
+
+        Args:
+            outChannels (int): Number of channels at the output of the layer.
+            time_emb_dim (Optional[int], optional): Dimension of the embedding tensor. Defaults to None.
+            gn_group_size (int, optional): Groupsize for GroupNorm layer. Defaults to 8.
+            dropoutRate (float, optional): Dropout rate for Dropout layer. Defaults to 0.0.
+            up (bool, optional): If true, adds spatial upsampling layer. Defaults to False.
+            down (bool, optional): If true, adds spatial downsampling layer. Defaults to False.
+            dropResBlockRate (float, optional): Probability of dropping a ResNet block for one optimization step.
+                Defaults to 0.0.
+            downsampling (str, optional): Downsampling method to use. Defaults to "average".
+            kwargs (Any): Additional key word arguments passed to the base class.
+        """
         super(ResnetBlock, self).__init__(**kwargs)
 
         self.outChannels = outChannels
@@ -330,25 +441,23 @@ class ResnetBlock(tf.keras.layers.Layer):
         self.block1_h = Block(outChannels, gn_group_size=gn_group_size, up=up, down=down, downsampling=downsampling)
         self.block2_h = Block(outChannels, gn_group_size=gn_group_size, dropoutRate=dropoutRate)
 
-    def build(self, inputShape):
+    def build(self, inputShape: Tuple[int, ...]) -> None:
         self.skip_x = (
             MyConv2D(filters=self.outChannels, kernel_size=3) if inputShape[-1] != self.outChannels else Identity()
         )
         super(ResnetBlock, self).build(inputShape)
         self.built = True
 
-    def call(self, x, time_emb=None, **kwargs):
+    def call(self, x: tf.Tensor, time_emb: Optional[int] = None, **kwargs: Any) -> tf.Tensor:
         if not kwargs["training"]:
             return self._call(x, time_emb, **kwargs)
-        else:
-            if np.random.binomial(n=1, p=self.dropResBlockRate):
-                return x
-            else:
-                return self._call(x, time_emb, **kwargs)
+        if np.random.binomial(n=1, p=self.dropResBlockRate):
+            return x
+        return self._call(x, time_emb, **kwargs)
 
-    def _call(self, x, time_emb=None, **kwargs):
+    def _call(self, x: tf.Tensor, time_emb: Optional[int] = None, **kwargs: Any) -> tf.Tensor:
         gamma_beta = None
-        if exists(self.time_emb_dim) and exists(time_emb):
+        if _exists(self.time_emb_dim) and _exists(time_emb):
             time_emb = self.mlp_dense(time_emb)
             time_emb = rearrange(time_emb, "b c -> b 1 1 c")
             gamma_beta = tf.split(time_emb, num_or_size_splits=2, axis=-1)
@@ -364,7 +473,8 @@ class ResnetBlock(tf.keras.layers.Layer):
 
         return y
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(ResnetBlock, self).get_config()
         config.update(
             {
@@ -382,7 +492,21 @@ class ResnetBlock(tf.keras.layers.Layer):
 
 
 class LinearAttention(tf.keras.layers.Layer):
-    def __init__(self, dim, heads=8, dim_head=32, **kwargs):
+    """Multi-head linear attention layer.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(self, dim: int, heads: int = 8, dim_head: int = 32, **kwargs: Any) -> None:
+        """Multi-head linear attention layer.
+
+        Args:
+            dim (int): Number of channels at the output of the attention layer.
+            heads (int, optional): Number of heads for multi-head attention. Defaults to 8.
+            dim_head (int, optional): Hidden dimension of individual head. Defaults to 32.
+            kwargs (Any): Additional key word arguments passed to the base class.
+        """
         super(LinearAttention, self).__init__(**kwargs)
         self.dim = dim
         self.dim_head = dim_head
@@ -394,7 +518,8 @@ class LinearAttention(tf.keras.layers.Layer):
         self.to_qkv = MyConv2D(filters=self.hidden_dim * 3, kernel_size=1)
         self.to_out = MyConv2D(filters=dim, kernel_size=1)
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h, w, dim]."""
         b, h, w, c = x.shape
         qkv = self.to_qkv(x)
         qkv = tf.split(qkv, num_or_size_splits=3, axis=-1)
@@ -410,7 +535,8 @@ class LinearAttention(tf.keras.layers.Layer):
         out = rearrange(out, "b h c (x y) -> b x y (h c)", h=self.heads, x=h, y=w)
         return self.to_out(out)
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(LinearAttention, self).get_config()
         config.update(
             {
@@ -425,7 +551,21 @@ class LinearAttention(tf.keras.layers.Layer):
 
 
 class Attention(tf.keras.layers.Layer):
-    def __init__(self, dim, heads=8, dim_head=32, **kwargs):
+    """Multi-head attention layer.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(self, dim: int, heads: int = 8, dim_head: int = 32, **kwargs: Any) -> None:
+        """Multi-head attention layer.
+
+        Args:
+            dim (int): Number of channels at the output of the attention layer.
+            heads (int, optional): Number of heads for multi-head attention. Defaults to 8.
+            dim_head (int, optional): Hidden dimension of individual head. Defaults to 32.
+            kwargs (Any): Additional key word arguments passed to the base class.
+        """
         super(Attention, self).__init__(**kwargs)
         self.dim = dim
         self.dim_head = dim_head
@@ -436,7 +576,8 @@ class Attention(tf.keras.layers.Layer):
         self.to_qkv = MyConv2D(filters=self.hidden_dim * 3, kernel_size=1)
         self.to_out = MyConv2D(filters=dim, kernel_size=1)
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h, w, dim]."""
         b, h, w, c = x.shape
         qkv = self.to_qkv(x)
         qkv = tf.split(qkv, num_or_size_splits=3, axis=-1)
@@ -453,7 +594,8 @@ class Attention(tf.keras.layers.Layer):
         out = rearrange(out, "b h (x y) d -> b x y (h d)", x=h, y=w)
         return self.to_out(out)
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(Attention, self).get_config()
         config.update(
             {
@@ -468,45 +610,74 @@ class Attention(tf.keras.layers.Layer):
 
 
 class InterSkipConnection(tf.keras.layers.Layer):
-    def __init__(self, pool_size, filters=64, gn_group_size=8, **kwargs):
-        """Skip connection between encoder and decoder of a UNet. Can be applied between different levels of the UNet.
+    """Skip connection between encoder and decoder of a UNet. Can be applied between different levels of the UNet.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(self, pool_size: int, filters: int = 64, gn_group_size: int = 8, **kwargs: Any) -> None:
+        """Skip connection between encoder and decoder of UNet3+. Can be applied between different levels of the UNet.
 
         Args:
-            * filters (optional): Number of channels in the resulting feature map. Defaults to 64.
-            * pool_size: poolsize for the MaxPool2D opperation to shrink the spatial width.
-            * gn_group_size: Size of groups for the GroupNorm layer. Defaults to 32.
+            pool_size (int): poolsize for the MaxPool2D opperation to shrink the spatial width.
+            filters (int, optional): Number of channels in the resulting feature map. Defaults to 64.
+            gn_group_size (int, optional): Size of groups for the GroupNorm layer. Defaults to 8.
+            kwargs (Any): Additional key word arguments passed to the base class.
         """
         super(InterSkipConnection, self).__init__(**kwargs)
         self.filters = filters
         self.pool_size = pool_size
         self.gn_group_size = gn_group_size
-        self.pool = DownSample((pool_size, pool_size), downsampling="max") if pool_size > 1 else Identity()
-        self.block = Block(outChannels=filters, gn_group_size=gn_group_size)
+        self.pool: tf.keras.layers.Layer = (
+            DownSample((pool_size, pool_size), downsampling="max") if pool_size > 1 else Identity()
+        )
+        self.block: tf.keras.layers.Layer = Block(outChannels=filters, gn_group_size=gn_group_size)
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h/pool_size, w/pool_size, filters]."""
         x = self.pool(x)
         return self.block(x, **kwargs)
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(InterSkipConnection, self).get_config()
         config.update({"filters": self.filters, "pool_size": self.pool_size, "gn_group_size": self.gn_group_size})
         return config
 
 
 class IntraSkipConnection(tf.keras.layers.Layer):
-    def __init__(self, size, filters=64, gn_group_size=8, **kwargs):
+    """Skip connection between different levels in decoder of UNet3+.
+
+    Inherits from:
+        tf.keras.layers.Layer
+    """
+
+    def __init__(self, size: int, filters: int = 64, gn_group_size: int = 8, **kwargs: Any) -> None:
+        """Skip connection between different levels in decoder of UNet3+.
+
+        Args:
+            size (int): Horizontal and vertical size of the interpolation window used for upsampling.
+            filters (int, optional): Number of channels in the resulting feature map. Defaults to 64.
+            gn_group_size (int, optional): Size of groups for the GroupNorm layer. Defaults to 8.
+            kwargs (Any): Additional key word arguments passed to the base class.
+        """
         super(IntraSkipConnection, self).__init__(**kwargs)
         self.filters = filters
         self.size = size
         self.gn_group_size = gn_group_size
-        self.up = UpSample(size=(size, size), interpolation="nearest") if size > 1 else Identity()
-        self.block = Block(outChannels=filters, gn_group_size=gn_group_size)
+        self.up: tf.keras.layers.Layer = (
+            UpSample(size=(size, size), interpolation="nearest") if size > 1 else Identity()
+        )
+        self.block: tf.keras.layers.Layer = Block(outChannels=filters, gn_group_size=gn_group_size)
 
-    def call(self, x, **kwargs):
+    def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
+        """Execute layer. `Input shape`: [b, h, w, c], `Output shape`: [b, h*size, w*size, filters]."""
         x = self.up(x)
         return self.block(x, **kwargs)
 
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """Return layer configuration."""
         config = super(IntraSkipConnection, self).get_config()
         config.update({"filters": self.filters, "size": self.size, "gn_group_size": self.gn_group_size})
         return config
@@ -516,44 +687,74 @@ class IntraSkipConnection(tf.keras.layers.Layer):
 #        UNET             #
 ###########################
 class Unet(tf.keras.Model):
+    """Unet Model with single input and output conditioned on a timestep embedding.
+
+    Inherits from:
+        tf.keras.Model
+
+    Input:
+        Feature map (e.g. image, RGBD or depth map) at any diffusion timestep
+        Timestep: Diffusion timestep
+        Input shape: [batch, height, width, diffusionChannels], [batch]
+
+    Output:
+        if learned_variance:
+            predicted Noise and variance added at the given timestep
+            Output shape: [batch, height, width, 2* diffusionChannels]
+        else:
+            predicted Noise added at the given timestep
+            Output shape: [batch, height, width, diffusionChannels]
+    """
+
     def __init__(
         self,
-        baseDim=64,
-        dim_mults=(1, 2, 4, 8),
-        numBlocks=(2, 2, 2, 2),
-        numResBlocks=(1, 1, 1, 1),
-        attentionBlocks=(1, 1, 1, 1),
-        dropResBlockRate=(0.0, 0.0, 0.0, 0.0),
-        diffusionChannels=1,
-        gn_group_size=8,
-        learned_variance=False,
-        dropoutRate=0.1,
-        downsampling="average",
-    ):
+        baseDim: int = 64,
+        dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
+        numBlocks: Tuple[int, ...] = (2, 2, 2, 2),
+        numResBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        attentionBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        dropResBlockRate: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
+        diffusionChannels: int = 1,
+        gn_group_size: int = 8,
+        learned_variance: bool = False,
+        dropoutRate: float = 0.1,
+        downsampling: str = "average",
+    ) -> None:
         """Unet Model with single input and output conditioned on a timestep embedding.
 
-        Input:
-            Feature map (e.g. image, RGBD or depth map) at any diffusion timestep
-            Timestep: Diffusion timestep
-            Input shape: [batch, height, width, diffusionChannels], [batch]
-
-        Output:
-            if learned_variance:
-              predicted Noise and variance added at the given timestep
-              Output shape: [batch, height, width, 2* diffusionChannels]
-            else:
-              predicted Noise added at the given timestep
-              Output shape: [batch, height, width, diffusionChannels]
-
         Args:
-            * baseDim (int): Minimum number of channels that is used as a basis for each level of the UNet Model. Defaults to 64.
-            * dim_mults (list[int]): List of integers. Each number represents a new level of the UNet where the number of channels is the multipliplication of baseDim with the respective multiplier. Total Number of layers of the UNet = len(dim_mults). Defaults to (1, 2, 4, 8).
-            * numBlocks (list[int]): A list of integers where each element represent the number of blocks created in a stage of the UNet Model, where Block(x) = Attention(ResBlock(x)). Defaults to (2, 2, 2, 2).
-            * numResBlocks (list[int]): A list of integers where each element represent the number of ResBlocks created within a Block in a stage of the UNet Model, where each Resblock contains 'numResBlocks' consecutive resBlocks. Defaults to (1, 1, 1, 1).
-            * diffusionChannels (int): Number of channels of the data input that is beeing diffused. Depending on 'learned_variance' parameter, the number of output channels are calculated accordingly. Defaults to 1.
-            * gn_group_size (int): Groupsize for the Groupnormalization layers within the model. Defaults to 32.
-            * learned_variance (bool): The Variance of the diffusion model can eitherbe set or learned. If learned, the UNet Model predicts the noise and the variance, hence doubles the output channels. Defaults to False.
-            * dropoutRate (float): Dropoutrate parameter for the SpatialDropout layers. Defaults to 0.1.
+            baseDim (int, optional): Minimum number of channels used as a basis for each level of the UNet Model.
+                Defaults to 64.
+
+            dim_mults (Tuple[int, ...], optional): Each number represents a new level of the UNet where the number of
+                channels is the multipliplication of baseDim with the respective multiplier. Total Number of layers of
+                the UNet = len(dim_mults). Defaults to (1, 2, 4, 8).
+
+            numBlocks (Tuple[int, ...], optional): Each element represents the number of blocks created in a stage of
+                the UNet Model, where Block(x) = Attention(ResBlock(x)). Defaults to (2, 2, 2, 2).
+
+            numResBlocks (Tuple[int, ...], optional): Each element represent the number of ResBlocks created within a
+                Block in a stage of the UNet Model, where each Resblock contains 'numResBlocks' consecutive resBlocks.
+                Defaults to (1, 1, 1, 1).
+
+            attentionBlocks (Tuple[int, ...], optional): If value is 1, attention block is added at corresponding level
+                of the UNet. If it is 0, it is not added. Defaults to (1, 1, 1, 1).
+
+            dropResBlockRate (Tuple[float, ...], optional): Probability of dropping a ResNet block for one optimization
+                step. Defaults to (0.0, 0.0, 0.0, 0.0).
+
+            diffusionChannels (int, optional): Number of channels of the data input that is beeing diffused. Depending
+                on learned_variance parameter, the number of output channels are calculated accordingly. Defaults to 1.
+
+            gn_group_size (int, optional): Groupsize for the Groupnormalization layers within the model. Defaults to 8.
+
+            learned_variance (bool, optional): The Variance of the diffusion model can eitherbe set or learned.
+                If learned, the UNet Model predicts the noise and the variance, hence doubles the output channels.
+                Defaults to False.
+
+            dropoutRate (float, optional): Dropoutrate parameter for the SpatialDropout layers. Defaults to 0.1.
+
+            downsampling (str, optional): ["average" | "conv" | "max" | "learned_pooling"]. Defaults to "average".
         """
         super(Unet, self).__init__()
 
@@ -588,8 +789,8 @@ class Unet(tf.keras.Model):
             ResnetBlock, gn_group_size=gn_group_size, dropoutRate=dropoutRate, time_emb_dim=self.time_dim
         )
 
-        self.encoder = []
-        self.decoder = []
+        self.encoder: List[tf.keras.layers.Layer] = []
+        self.decoder: List[tf.keras.layers.Layer] = []
         self.num_resolutions = len(self.in_out)
 
         ##############
@@ -699,7 +900,7 @@ class Unet(tf.keras.Model):
             name="output",
         )
 
-    def build(self, inputShape):
+    def build(self, inputShape: Tuple[int, ...]) -> None:
         self.inputShape = inputShape
         inp = tf.keras.layers.Input(shape=inputShape)
         t = tf.keras.layers.Input(shape=())
@@ -707,7 +908,7 @@ class Unet(tf.keras.Model):
 
         self.built = True
 
-    def call(self, input, time, **kwargs):
+    def call(self, input: tf.Tensor, time: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         x = self.init_conv(input, **kwargs)
         t = self.time_mlp(time, **kwargs)
 
@@ -738,7 +939,15 @@ class Unet(tf.keras.Model):
         x = tf.concat([x, skips.pop()], axis=-1)
         return self.final_conv(x, **kwargs)
 
-    def PlotGraph(self, fileName="model.png"):
+    def PlotGraph(self, fileName: str = "model.png") -> None:
+        """Saves the graph of the model as an image.
+
+        Args:
+            fileName (str, optional): Filename and location of the output image. Defaults to "model.png".
+
+        Raises:
+            Exception: if model is not built.
+        """
         if self.built:
             inp = tf.keras.layers.Input(shape=self.inputShape)
             t = tf.keras.layers.Input(shape=())
@@ -752,20 +961,62 @@ class Unet(tf.keras.Model):
 #     ConditionalUnet     #
 ###########################
 class ConditionalUnet(Unet):
+    """Unet Model conditioned on a feature map and timestep embedding.
+
+    Inherits from:
+        Unet
+    """
+
     def __init__(
         self,
-        baseDim=64,
-        dim_mults=(1, 2, 4, 8),
-        numBlocks=(2, 2, 2, 2),
-        numResBlocks=(1, 1, 1, 1),
-        attentionBlocks=(1, 1, 1, 1),
-        dropResBlockRate=(0.0, 0.0, 0.0, 0.0),
-        diffusionChannels=1,
-        gn_group_size=8,
-        learned_variance=False,
-        dropoutRate=0.1,
-        downsampling="average",
-    ):
+        baseDim: int = 64,
+        dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
+        numBlocks: Tuple[int, ...] = (2, 2, 2, 2),
+        numResBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        attentionBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        dropResBlockRate: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
+        diffusionChannels: int = 1,
+        gn_group_size: int = 8,
+        learned_variance: bool = False,
+        dropoutRate: float = 0.1,
+        downsampling: str = "average",
+    ) -> None:
+        """Unet Model conditioned on a feature map and timestep embedding.
+
+        Args:
+            baseDim (int, optional): Minimum number of channels used as a basis for each level of the UNet Model.
+                Defaults to 64.
+
+            dim_mults (Tuple[int, ...], optional): Each number represents a new level of the UNet where the number of
+                channels is the multipliplication of baseDim with the respective multiplier. Total Number of layers of
+                the UNet = len(dim_mults). Defaults to (1, 2, 4, 8).
+
+            numBlocks (Tuple[int, ...], optional): Each element represents the number of blocks created in a stage of
+                the UNet Model, where Block(x) = Attention(ResBlock(x)). Defaults to (2, 2, 2, 2).
+
+            numResBlocks (Tuple[int, ...], optional): Each element represent the number of ResBlocks created within a
+                Block in a stage of the UNet Model, where each Resblock contains 'numResBlocks' consecutive resBlocks.
+                Defaults to (1, 1, 1, 1).
+
+            attentionBlocks (Tuple[int, ...], optional): If value is 1, attention block is added at corresponding level
+                of the UNet. If it is 0, it is not added. Defaults to (1, 1, 1, 1).
+
+            dropResBlockRate (Tuple[float, ...], optional): Probability of dropping a ResNet block for one optimization
+                step. Defaults to (0.0, 0.0, 0.0, 0.0).
+
+            diffusionChannels (int, optional): Number of channels of the data input that is beeing diffused. Depending
+                on learned_variance parameter, the number of output channels are calculated accordingly. Defaults to 1.
+
+            gn_group_size (int, optional): Groupsize for the Groupnormalization layers within the model. Defaults to 8.
+
+            learned_variance (bool, optional): The Variance of the diffusion model can eitherbe set or learned.
+                If learned, the UNet Model predicts the noise and the variance, hence doubles the output channels.
+                Defaults to False.
+
+            dropoutRate (float, optional): Dropoutrate parameter for the SpatialDropout layers. Defaults to 0.1.
+
+            downsampling (str, optional): ["average" | "conv" | "max" | "learned_pooling"]. Defaults to "average".
+        """
         super(ConditionalUnet, self).__init__(
             baseDim,
             dim_mults,
@@ -782,7 +1033,7 @@ class ConditionalUnet(Unet):
 
         self.conditionConcat = tf.keras.layers.Concatenate(name="conditionConcat")
 
-    def build(self, condShape, difShape):
+    def build(self, condShape: Tuple[int, ...], difShape: Tuple[int, ...]) -> None:
         self.condShape = condShape
         self.difShape = difShape
         cond = tf.keras.layers.Input(shape=condShape)
@@ -791,11 +1042,25 @@ class ConditionalUnet(Unet):
         self.call(cond, dif, t, training=False)
         self.built = True
 
-    def call(self, inp_condition, inp_diffusion, time, **kwargs):
+    def call(
+        self,
+        inp_condition: tf.Tensor,
+        inp_diffusion: tf.Tensor,
+        time: tf.Tensor,
+        **kwargs: Any,
+    ) -> tf.Tensor:
         conditioned_input = self.conditionConcat([inp_condition, inp_diffusion])
         return super(ConditionalUnet, self).call(conditioned_input, time, **kwargs)
 
-    def PlotGraph(self, fileName="model.png"):
+    def PlotGraph(self, fileName: str = "model.png") -> None:
+        """Saves the graph of the model as an image.
+
+        Args:
+            fileName (str, optional): Filename and location of the output image. Defaults to "model.png".
+
+        Raises:
+            Exception: if model is not built.
+        """
         if self.built:
             cond = tf.keras.layers.Input(shape=self.condShape)
             dif = tf.keras.layers.Input(shape=self.difShape)
@@ -810,21 +1075,65 @@ class ConditionalUnet(Unet):
 #        UNET3+           #
 ###########################
 class Unet3plus(ConditionalUnet):
+    """Unet3+ Model conditioned on a feature map and timestep embedding.
+
+    Inherits from:
+        ConditionalUnet
+    """
+
     def __init__(
         self,
-        baseDim=64,
-        dim_mults=(1, 2, 4, 8),
-        numBlocks=(2, 2, 2, 2),
-        numResBlocks=(1, 1, 1, 1),
-        attentionBlocks=(1, 1, 1, 1),
-        dropResBlockRate=(0.0, 0.0, 0.0, 0.0),
-        concat_filters=64,
-        diffusionChannels=1,
-        gn_group_size=8,
-        learned_variance=False,
-        dropoutRate=0.1,
-        downsampling="average",
-    ):
+        baseDim: int = 64,
+        dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
+        numBlocks: Tuple[int, ...] = (2, 2, 2, 2),
+        numResBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        attentionBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        dropResBlockRate: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
+        concat_filters: int = 64,
+        diffusionChannels: int = 1,
+        gn_group_size: int = 8,
+        learned_variance: bool = False,
+        dropoutRate: float = 0.1,
+        downsampling: str = "average",
+    ) -> None:
+        """Unet Model conditioned on a feature map and timestep embedding.
+
+        Args:
+            baseDim (int, optional): Minimum number of channels used as a basis for each level of the UNet Model.
+                Defaults to 64.
+
+            dim_mults (Tuple[int, ...], optional): Each number represents a new level of the UNet where the number of
+                channels is the multipliplication of baseDim with the respective multiplier. Total Number of layers of
+                the UNet = len(dim_mults). Defaults to (1, 2, 4, 8).
+
+            numBlocks (Tuple[int, ...], optional): Each element represents the number of blocks created in a stage of
+                the UNet Model, where Block(x) = Attention(ResBlock(x)). Defaults to (2, 2, 2, 2).
+
+            numResBlocks (Tuple[int, ...], optional): Each element represent the number of ResBlocks created within a
+                Block in a stage of the UNet Model, where each Resblock contains 'numResBlocks' consecutive resBlocks.
+                Defaults to (1, 1, 1, 1).
+
+            attentionBlocks (Tuple[int, ...], optional): If value is 1, attention block is added at corresponding level
+                of the UNet. If it is 0, it is not added. Defaults to (1, 1, 1, 1).
+
+            dropResBlockRate (Tuple[float, ...], optional): Probability of dropping a ResNet block for one optimization
+                step. Defaults to (0.0, 0.0, 0.0, 0.0).
+
+            concat_filters (int): Number of filters at each decoder level when concatenating encoder input. Defaults to 64.
+
+            diffusionChannels (int, optional): Number of channels of the data input that is beeing diffused. Depending
+                on learned_variance parameter, the number of output channels are calculated accordingly. Defaults to 1.
+
+            gn_group_size (int, optional): Groupsize for the Groupnormalization layers within the model. Defaults to 8.
+
+            learned_variance (bool, optional): The Variance of the diffusion model can eitherbe set or learned.
+                If learned, the UNet Model predicts the noise and the variance, hence doubles the output channels.
+                Defaults to False.
+
+            dropoutRate (float, optional): Dropoutrate parameter for the SpatialDropout layers. Defaults to 0.1.
+
+            downsampling (str, optional): ["average" | "conv" | "max" | "learned_pooling"]. Defaults to "average".
+        """
         super(Unet3plus, self).__init__(
             baseDim,
             dim_mults,
@@ -867,10 +1176,9 @@ class Unet3plus(ConditionalUnet):
             # skip connections from decoder
             d_skips = []
             for s in range(ind + 1):
-                if s < 2:  # latent space has same size as first encoder block!
-                    size = 2 ** (ind)
-                else:
-                    size = 2 ** (ind - (s - 1))
+                # latent space has same size as first encoder block!
+                size = 2 ** (ind) if (s < 2) else 2 ** (ind - (s - 1))
+
                 d_skips.append(
                     IntraSkipConnection(
                         filters=concat_filters,
@@ -898,7 +1206,7 @@ class Unet3plus(ConditionalUnet):
                 ]
             )
 
-    def call(self, inp_condition, inp_diffusion, time, **kwargs):
+    def call(self, inp_condition: tf.Tensor, inp_diffusion: tf.Tensor, time: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         conditioned_input = self.conditionConcat([inp_condition, inp_diffusion])
         x = self.init_conv(conditioned_input)
         t = self.time_mlp(time)
@@ -945,21 +1253,65 @@ class Unet3plus(ConditionalUnet):
 #  SuperResolutionUnet    #
 ###########################
 class SuperResolutionUnet(ConditionalUnet):
+    """Unet conditioned on a low resolution feature map and timestep embedding outputting a high resolution feature map.
+
+    Inherits from:
+        ConditionalUnet
+    """
+
     def __init__(
         self,
-        baseDim=64,
-        dim_mults=(1, 2, 4, 8),
-        numBlocks=(2, 2, 2, 2),
-        numResBlocks=(1, 1, 1, 1),
-        attentionBlocks=(1, 1, 1, 1),
-        dropResBlockRate=(0.0, 0.0, 0.0, 0.0),
-        diffusionChannels=1,
-        gn_group_size=8,
-        learned_variance=False,
-        dropoutRate=0.1,
-        upsamplingFactor=(2, 2),
-        downsampling="average",
-    ):
+        baseDim: int = 64,
+        dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
+        numBlocks: Tuple[int, ...] = (2, 2, 2, 2),
+        numResBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        attentionBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        dropResBlockRate: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
+        diffusionChannels: int = 1,
+        gn_group_size: int = 8,
+        learned_variance: bool = False,
+        dropoutRate: float = 0.1,
+        upsamplingFactor: Tuple[int, int] = (2, 2),
+        downsampling: str = "average",
+    ) -> None:
+        """Unet conditioned on a low resolution feature map and timestep embedding. Outputs high resolution feature map.
+
+        Args:
+            baseDim (int, optional): Minimum number of channels used as a basis for each level of the UNet Model.
+                Defaults to 64.
+
+            dim_mults (Tuple[int, ...], optional): Each number represents a new level of the UNet where the number of
+                channels is the multipliplication of baseDim with the respective multiplier. Total Number of layers of
+                the UNet = len(dim_mults). Defaults to (1, 2, 4, 8).
+
+            numBlocks (Tuple[int, ...], optional): Each element represents the number of blocks created in a stage of
+                the UNet Model, where Block(x) = Attention(ResBlock(x)). Defaults to (2, 2, 2, 2).
+
+            numResBlocks (Tuple[int, ...], optional): Each element represent the number of ResBlocks created within a
+                Block in a stage of the UNet Model, where each Resblock contains 'numResBlocks' consecutive resBlocks.
+                Defaults to (1, 1, 1, 1).
+
+            attentionBlocks (Tuple[int, ...], optional): If value is 1, attention block is added at corresponding level
+                of the UNet. If it is 0, it is not added. Defaults to (1, 1, 1, 1).
+
+            dropResBlockRate (Tuple[float, ...], optional): Probability of dropping a ResNet block for one optimization
+                step. Defaults to (0.0, 0.0, 0.0, 0.0).
+
+            diffusionChannels (int, optional): Number of channels of the data input that is beeing diffused. Depending
+                on learned_variance parameter, the number of output channels are calculated accordingly. Defaults to 1.
+
+            gn_group_size (int, optional): Groupsize for the Groupnormalization layers within the model. Defaults to 8.
+
+            learned_variance (bool, optional): The Variance of the diffusion model can eitherbe set or learned.
+                If learned, the UNet Model predicts the noise and the variance, hence doubles the output channels.
+                Defaults to False.
+
+            dropoutRate (float, optional): Dropoutrate parameter for the SpatialDropout layers. Defaults to 0.1.
+
+            upsamplingFactor (Tuple[int, int], optional): Factor of upsampling for given image dim. Defaults to (2, 2).
+
+            downsampling (str, optional): ["average" | "conv" | "max" | "learned_pooling"]. Defaults to "average".
+        """
         super(SuperResolutionUnet, self).__init__(
             baseDim,
             dim_mults,
@@ -977,7 +1329,7 @@ class SuperResolutionUnet(ConditionalUnet):
         # rgb will be blury, hence the blur augmentation
         self.upsample = SuperResUpSample(size=upsamplingFactor)
 
-    def call(self, low_res, high_res, time, **kwargs):
+    def call(self, low_res: tf.Tensor, high_res: tf.Tensor, time: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         low_res = self.upsample(low_res)
         return super(SuperResolutionUnet, self).call(low_res, high_res, time, **kwargs)
 
@@ -986,22 +1338,68 @@ class SuperResolutionUnet(ConditionalUnet):
 #  SuperResolutionUnet3+    #
 ###########################
 class SuperResolutionUnet3plus(Unet3plus):
+    """Unet3+ conditioned on a low resolution feature map and timestep embedding. Outputs high resolution feature map.
+
+    Inherits from:
+        Unet3plus
+    """
+
     def __init__(
         self,
-        baseDim=64,
-        dim_mults=(1, 2, 4, 8),
-        numBlocks=(2, 2, 2, 2),
-        numResBlocks=(1, 1, 1, 1),
-        attentionBlocks=(1, 1, 1, 1),
-        dropResBlockRate=(0.0, 0.0, 0.0, 0.0),
-        concat_filters=64,
-        diffusionChannels=1,
-        gn_group_size=8,
-        learned_variance=False,
-        dropoutRate=0.1,
-        upsamplingFactor=(2, 2),
-        downsampling="average",
-    ):
+        baseDim: int = 64,
+        dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
+        numBlocks: Tuple[int, ...] = (2, 2, 2, 2),
+        numResBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        attentionBlocks: Tuple[int, ...] = (1, 1, 1, 1),
+        dropResBlockRate: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
+        concat_filters: int = 64,
+        diffusionChannels: int = 1,
+        gn_group_size: int = 8,
+        learned_variance: bool = False,
+        dropoutRate: float = 0.1,
+        upsamplingFactor: Tuple[int, int] = (2, 2),
+        downsampling: str = "average",
+    ) -> None:
+        """Unet3+ conditioned on a low resolution feature map and timestep embedding. Outputs high resolution feature map.
+
+        Args:
+            baseDim (int, optional): Minimum number of channels used as a basis for each level of the UNet Model.
+                Defaults to 64.
+
+            dim_mults (Tuple[int, ...], optional): Each number represents a new level of the UNet where the number of
+                channels is the multipliplication of baseDim with the respective multiplier. Total Number of layers of
+                the UNet = len(dim_mults). Defaults to (1, 2, 4, 8).
+
+            numBlocks (Tuple[int, ...], optional): Each element represents the number of blocks created in a stage of
+                the UNet Model, where Block(x) = Attention(ResBlock(x)). Defaults to (2, 2, 2, 2).
+
+            numResBlocks (Tuple[int, ...], optional): Each element represent the number of ResBlocks created within a
+                Block in a stage of the UNet Model, where each Resblock contains 'numResBlocks' consecutive resBlocks.
+                Defaults to (1, 1, 1, 1).
+
+            attentionBlocks (Tuple[int, ...], optional): If value is 1, attention block is added at corresponding level
+                of the UNet. If it is 0, it is not added. Defaults to (1, 1, 1, 1).
+
+            dropResBlockRate (Tuple[float, ...], optional): Probability of dropping a ResNet block for one optimization
+                step. Defaults to (0.0, 0.0, 0.0, 0.0).
+
+            concat_filters (int): Number of filters at each decoder level when concatenating encoder input. Defaults to 64.
+
+            diffusionChannels (int, optional): Number of channels of the data input that is beeing diffused. Depending
+                on learned_variance parameter, the number of output channels are calculated accordingly. Defaults to 1.
+
+            gn_group_size (int, optional): Groupsize for the Groupnormalization layers within the model. Defaults to 8.
+
+            learned_variance (bool, optional): The Variance of the diffusion model can eitherbe set or learned.
+                If learned, the UNet Model predicts the noise and the variance, hence doubles the output channels.
+                Defaults to False.
+
+            dropoutRate (float, optional): Dropoutrate parameter for the SpatialDropout layers. Defaults to 0.1.
+
+            upsamplingFactor (Tuple[int, int], optional): Factor of upsampling for given image dim. Defaults to (2, 2).
+
+            downsampling (str, optional): ["average" | "conv" | "max" | "learned_pooling"]. Defaults to "average".
+        """
         super(SuperResolutionUnet3plus, self).__init__(
             baseDim,
             dim_mults,
@@ -1020,7 +1418,7 @@ class SuperResolutionUnet3plus(Unet3plus):
         # rgb will be blury, hence the blur augmentation
         self.upsample = SuperResUpSample(size=upsamplingFactor)
 
-    def call(self, low_res, high_res, time, **kwargs):
+    def call(self, low_res: tf.Tensor, high_res: tf.Tensor, time: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         low_res = self.upsample(low_res)
         return super(SuperResolutionUnet3plus, self).call(low_res, high_res, time, **kwargs)
 
@@ -1029,18 +1427,20 @@ class SuperResolutionUnet3plus(Unet3plus):
 #     DiffusionModel      #
 ###########################
 class DiffusionModel:
+    """Abstraction of a diffusion model including relevant settings."""
+
     def __init__(
         self,
-        model,
-        varianceType,
-        diffusionSteps,
-        diffusionInputShapeChannels,
-        diffusionInputShapeHeightWidth,
-        betaScheduleType="linear",
-        lossWeighting="simple",
-        lambdaVLB=None,
-        mixedPrecission=True,
-    ):
+        model: tf.keras.Model,
+        varianceType: str,
+        diffusionSteps: int,
+        diffusionInputShapeChannels: int,
+        diffusionInputShapeHeightWidth: Tuple[int, int],
+        betaScheduleType: str = "linear",
+        lossWeighting: str = "simple",
+        lambdaVLB: Optional[float] = None,
+        mixedPrecission: bool = True,
+    ) -> None:
         self.model = model
         self.varianceType = varianceType
         self.lossWeighting = lossWeighting
@@ -1050,7 +1450,7 @@ class DiffusionModel:
         self.betaScheduleType = betaScheduleType
         self.diffusionInputShapeChannels = diffusionInputShapeChannels
         self.diffusionInputShapeHeightWidth = diffusionInputShapeHeightWidth
-        self.optimizer = None
+        self.optimizer: tf.keras.optimizers.Optimizer = None
         self.strategy = tf.distribute.get_strategy()
 
         self.betaSchedule = cdd_diffusion.BetaSchedule(
@@ -1058,18 +1458,25 @@ class DiffusionModel:
         )
         self.diffusion = cdd_diffusion.GaussianDiffusion(betaSchedule=self.betaSchedule, varianceType=self.varianceType)
 
-    def compile(self, optimizer):
+    def compile(self, optimizer: tf.keras.optimizers.Optimizer) -> None:
+        """Setting the optimizer of the diffusion model.
+
+        Args:
+            optimizer (tf.keras.optimizers.Optimizer): Optimizer to train the diffusion model
+        """
         if self.mixedPrecission:
             optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
-
         self.optimizer = optimizer
 
-    def getCurrentLearningRate(self):
+    def getCurrentLearningRate(self) -> float:
+        """Get the currently set learning rate from the optimizer.
+
+        Returns:
+            float: Current learning rate.
+        """
         # _current_learning_rate considers also updates performed by learning rate schedules
-        if self.mixedPrecission:  # LossScaleOptimizer Wrapper Object
-            optimizer = self.optimizer.inner_optimizer
-        else:
-            optimizer = self.optimizer
+        # LossScaleOptimizer is a Wrapper Object -> inner_optimizer gets the actual one.
+        optimizer = self.optimizer.inner_optimizer if self.mixedPrecission else self.optimizer
 
         if isinstance(optimizer.lr, tf.keras.optimizers.schedules.LearningRateSchedule):
             current_lr = optimizer.lr(optimizer.iterations)
@@ -1077,23 +1484,52 @@ class DiffusionModel:
             current_lr = optimizer.lr
         return current_lr
 
+    def _get_loss_weighting(
+        self,
+        weighting_type: str,
+        batch_size: int,
+        timestep_values: tf.Tensor,
+    ) -> Union[float, tf.Tensor]:
+        """Get the value for the loss weighting depending on the weighting_type.
+
+        Args:
+            weighting_type (str): [ simple | P2 ]
+            batch_size (int): Batchsize of the data
+            timestep_values (tf.Tensor): Indicies of the timesteps used to obtain the actual value from the beta schedule.
+
+        Raises:
+            ValueError: Unsupported value for self.lossWeighting
+
+        Returns:
+            Union[float, tf.Tensor]: Loss weighting factor.
+        """
+        if weighting_type == "simple":
+            return 1
+        if weighting_type == "P2":
+            return self.diffusion._SampledScalarToTensor(
+                self.diffusion.bs.lambda_t_tick_simple, timestep_values, shape=(batch_size, 1, 1, 1)
+            )
+        raise ValueError(f"Undefined lossWeighting provided: {self.lossWeighting}")
+
     @tf.function
-    def train_step(self, batched_x0, globalBatchsize):
+    def train_step(self, batched_x0: tf.Tensor, globalBatchsize: int) -> tf.Tensor:
+        """Performs a single optimization step of the optimizer for a single batch.
+
+        Args:
+            batched_x0 (tf.Tensor): Unnoisy data samples at timestep 0.
+            globalBatchsize (int): Batch size considering all workers running in parallel in a data parallel setup.
+
+        Returns:
+            tf.Tensor: Loss of the current batch
+        """
         batched_x0_condition, batched_x0_diffusion_input = batched_x0
         batch_size = batched_x0_diffusion_input.shape[0]
 
-        timestep_values = self.diffusion.generate_timestamp(batch_size)  # 1 value for each sample in the batch
+        timestep_values = self.diffusion.draw_random_timestep(batch_size)  # 1 value for each sample in the batch
 
         batched_xt_diffusion_input, noise = self.diffusion.q_sample_xt(batched_x0_diffusion_input, timestep_values)
 
-        if self.lossWeighting == "simple":
-            loss_scaling_factor = 1
-        elif self.lossWeighting == "P2":
-            loss_scaling_factor = self.diffusion.SampledScalarToTensor(
-                self.diffusion.bs.lambda_t_tick_simple, timestep_values, shape=(batch_size, 1, 1, 1)
-            )
-        else:
-            raise Exception(f"Undefined lossWeighting provided: {self.lossWeighting}")
+        loss_scaling_factor = self._get_loss_weighting(self.lossWeighting, batch_size, timestep_values)
 
         with tf.GradientTape() as tape:
             prediction = self.model(batched_x0_condition, batched_xt_diffusion_input, timestep_values)
@@ -1130,22 +1566,24 @@ class DiffusionModel:
         return loss
 
     @tf.function
-    def test_step(self, batched_x0, globalBatchsize):
+    def test_step(self, batched_x0: tf.Tensor, globalBatchsize: int) -> tf.Tensor:
+        """Performs a single test step without updating the weights for a single batch.
+
+        Args:
+            batched_x0 (tf.Tensor): Unnoisy data samples at timestep 0.
+            globalBatchsize (int): Batch size considering all workers running in parallel in a data parallel setup.
+
+        Returns:
+            tf.Tensor: Loss of the current batch
+        """
         batched_x0_condition, batched_x0_diffusion_input = batched_x0
         batch_size = batched_x0_diffusion_input.shape[0]
 
-        timestep_values = self.diffusion.generate_timestamp(batch_size)  # 1 value for each sample in the batch
+        timestep_values = self.diffusion.draw_random_timestep(batch_size)  # 1 value for each sample in the batch
 
         batched_xt_diffusion_input, noise = self.diffusion.q_sample_xt(batched_x0_diffusion_input, timestep_values)
 
-        if self.lossWeighting == "simple":
-            loss_scaling_factor = 1
-        elif self.lossWeighting == "P2":
-            loss_scaling_factor = self.diffusion.SampledScalarToTensor(
-                self.diffusion.bs.lambda_t_tick_simple, timestep_values, shape=(batch_size, 1, 1, 1)
-            )
-        else:
-            raise Exception(f"Undefined lossWeighting provided: {self.lossWeighting}")
+        loss_scaling_factor = self._get_loss_weighting(self.lossWeighting, batch_size, timestep_values)
 
         prediction = self.model(batched_x0_condition, batched_xt_diffusion_input, timestep_values, training=False)
 
@@ -1171,7 +1609,19 @@ class DiffusionModel:
         return loss
 
     # @tf.function
-    def eval_step(self, batched_x0, globalBatchsize, threshold=-0.9):
+    def eval_step(self, batched_x0: tf.Tensor, globalBatchsize: int, threshold: float = -0.9) -> Tuple[float, ...]:
+        """Performs a single evaluation step without updating the weights for a single batch.
+
+        Args:
+            batched_x0 (tf.Tensor): Unnoisy data samples at timestep 0.
+            globalBatchsize (int): Batch size considering all workers running in parallel in a data parallel setup.
+            threshold (float, optional): Threshold values to remove back ground when calculating pixel-wise distance
+                metrics e.g. MAE or MSE. Defaults to -0.9.
+
+        Returns:
+            Tuple[float, ...]: Calculated metrics are: VLB, mae, mse, iou, dice, x_translation, y_translation,
+                mae_shifted, mse_shifted, iou_shifted, dice_shifted
+        """
         batched_x0_condition, batched_x0_diffusion_input = batched_x0
         inputShape = batched_x0_diffusion_input.shape
         VLB_terms = []
@@ -1256,7 +1706,16 @@ class DiffusionModel:
         )
 
     @tf.function
-    def distributed_train_step(self, batch_train, globalBatchsize):
+    def distributed_train_step(self, batch_train: tf.Tensor, globalBatchsize: int) -> tf.Tensor:
+        """Distributes the training step on all available workers.
+
+        Args:
+            batch_train (tf.Tensor): Current batch of training data.
+            globalBatchsize (int): Batch size considering all workers running in parallel in a data parallel setup.
+
+        Returns:
+            tf.Tensor: Tensor containing the reduced (summation) losses from all workers.
+        """
         per_replica_loss = self.strategy.run(
             self.train_step,
             args=(
@@ -1267,7 +1726,16 @@ class DiffusionModel:
         return self.strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_loss, axis=None)
 
     @tf.function
-    def distributed_test_step(self, batch_test, globalBatchsize):
+    def distributed_test_step(self, batch_test: tf.Tensor, globalBatchsize: int) -> tf.Tensor:
+        """Distributes the testing step on all available workers.
+
+        Args:
+            batch_test (tf.Tensor): Current batch of training data.
+            globalBatchsize (int): Batch size considering all workers running in parallel in a data parallel setup.
+
+        Returns:
+            tf.Tensor: Tensor containing the reduced (summation) losses from all workers.
+        """
         per_replica_loss = self.strategy.run(
             self.test_step,
             args=(
@@ -1278,7 +1746,16 @@ class DiffusionModel:
         return self.strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_loss, axis=None)
 
     # @tf.function
-    def distributed_eval_step(self, batch_test, globalBatchsize):
+    def distributed_eval_step(self, batch_test: tf.Tensor, globalBatchsize: int) -> tf.Tensor:
+        """Distributes the evaluation step on all available workers.
+
+        Args:
+            batch_test (tf.Tensor): Current batch of training data.
+            globalBatchsize (int): Batch size considering all workers running in parallel in a data parallel setup.
+
+        Returns:
+            tf.Tensor: Tensor containing the reduced (summation) metrics from all workers.
+        """
         per_replica_metric_vector = self.strategy.run(
             self.eval_step,
             args=(
@@ -1298,14 +1775,32 @@ class DiffusionModel:
 
         return reduced_metric_vector
 
-    def DDPMSampler(self, x0_condition, sampling_steps, frames_to_output=None, threshold=-0.9):
-        if frames_to_output:
+    def DDPMSampler(
+        self,
+        x0_condition: tf.Tensor,
+        sampling_steps: int,
+        frames_to_output: Optional[int] = None,
+        threshold: float = -0.9,
+    ) -> Dict[str, Union[np.ndarray, tf.Tensor]]:
+        """Sample from the diffusion model using the DDPM sampler.
+
+        Args:
+            x0_condition (tf.Tensor): Condition input for the conditional sampling procedure.
+            sampling_steps (int): Number of timesteps for the reverse diffusion process.
+            frames_to_output (Optional[int], optional): Number of frames to output. Defaults to None.
+            threshold (float, optional): Threshold for removing background pixel. Defaults to -0.9.
+
+        Returns:
+            Dict[str, Union[np.ndarray, tf.Tensor]]: Dict containing the final sample "x0", the intermediate frames
+                "xt_frames" and the associated timesteps in "t_frames"
+        """
+        if frames_to_output is not None:
             frames_to_output = min(frames_to_output, sampling_steps)
             img_list = []
             timestep_list = []
             samplesToPlot = np.linspace(0, self.diffusionSteps, frames_to_output, dtype=np.int32)
         else:
-            samplesToPlot = []
+            samplesToPlot = np.array([])
         output = {}
         batch_size = x0_condition.shape[0]
 
@@ -1332,11 +1827,28 @@ class DiffusionModel:
             img_list.append(output["x0"])
             timestep_list.append(0)
             output["xt_frames"] = tf.einsum("fbhwc->bfhwc", tf.convert_to_tensor(img_list))  # swap batch and frame axis
-            output["t_frames"] = timestep_list
+            output["t_frames"] = np.array(timestep_list)
 
         return output
 
-    def DDIMSampler(self, x0_condition, sampling_steps=50, frames_to_output=None, threshold=-0.9):
+    def DDIMSampler(
+        self,
+        x0_condition: tf.Tensor,
+        sampling_steps: int = 50,
+        frames_to_output: Optional[int] = None,
+        threshold: float = -0.9,
+    ) -> Dict[str, Union[np.ndarray, tf.Tensor]]:
+        """Sample from the diffusion model using the DDIM sampler.
+
+        Args:
+            x0_condition (tf.Tensor): Condition input for the conditional sampling procedure.
+            sampling_steps (int, optional): Number of timesteps for the reverse diffusion process. Defaults to 50.
+            frames_to_output (Optional[int], optional): Number of frames to output. Defaults to None.
+            threshold (float, optional): Threshold for removing background pixel. Defaults to -0.9.
+
+        Returns:
+            Dict[str, Union[np.ndarray, tf.Tensor]]: _description_
+        """
         # Define number of inference loops to run
         output = {}
 
