@@ -1,6 +1,6 @@
 FROM nvcr.io/nvidia/tensorflow:22.02-tf2-py3
 
-USER 1000:1000
+#USER 1000:1000
 
 # Copy the requirements.txt file to our Docker image
 ADD requirements.txt .

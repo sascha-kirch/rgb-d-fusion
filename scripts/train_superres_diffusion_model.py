@@ -165,7 +165,7 @@ else:
 RANDOM_SEED = 1911
 tf.random.set_seed(RANDOM_SEED)
 
-strategy, CONFIG["RUNTIME_ENVIRONMENT"], hw_accelerator_handle = DeepSaki.DetectHw()
+strategy, CONFIG["RUNTIME_ENVIRONMENT"], hw_accelerator_handle = DeepSaki.utils.DetectHw()
 CONFIG["GLOBAL_BATCH_SIZE"] = CONFIG["BATCH_SIZE_PER_REPLICA"] * strategy.num_replicas_in_sync
 CONFIG["DISTRIBUTED_TRAINING"] = isinstance(strategy, tf.distribute.MirroredStrategy)
 
